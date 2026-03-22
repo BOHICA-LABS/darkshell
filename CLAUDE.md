@@ -1,5 +1,7 @@
 # CLAUDE.md — DarkShell
 
+@SOUL.md
+
 ## What This Is
 
 DarkShell is a fork of [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) (Apache 2.0)
