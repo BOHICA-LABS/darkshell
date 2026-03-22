@@ -179,6 +179,91 @@ openshell
 | 6 | **No download filtering** — gets everything | Downloading just `.factory/` requires downloading the entire workspace first | Add `--include`/`--exclude` patterns to download |
 | 7 | **No upload diffing** — can't detect what changed | User can't preview what will be overwritten before uploading | Add `--dry-run` to upload showing what would transfer |
 
+### P8: Sandbox Health Monitoring
+
+**What:** `darkshell sandbox health <name>` returns structured health status:
+CPU/memory usage, disk usage, process count, network connectivity, gateway status.
+
+**Why:** When agents are running, operators need to know if the sandbox is healthy
+or resource-constrained. Currently requires SSH + manual inspection.
+
+**How:** Run health check commands via exec, parse + return structured JSON.
+
+**Scope:** ~200 LOC
+
+### P9: Sandbox Resource Limits
+
+**What:** `--cpu-limit` and `--memory-limit` flags on sandbox create.
+
+**Why:** AI agents can consume unbounded resources (large context windows, parallel
+builds). Without limits, one sandbox starves others.
+
+**How:** Map to k3s pod resource limits (requests/limits in pod spec).
+
+**Scope:** ~150 LOC (pod spec generation + CLI flags)
+
+### P10: Upload/Download Streaming Progress with ETA
+
+**What:** Real-time progress bar showing: bytes transferred, transfer rate, ETA.
+Both upload and download.
+
+**Why:** Users killing "stuck" transfers that were actually working.
+
+**How:** Wrap tar stream in counting reader/writer, use `indicatif` ProgressBar.
+
+**Scope:** ~200 LOC (included with P4 but covers download too)
+
+### P11: Sandbox Events / Webhook Notifications
+
+**What:** `darkshell sandbox watch <name>` streams sandbox events (state changes,
+policy reloads, process exits, resource alerts). Optional webhook for CI/CD integration.
+
+**Why:** DarkClaw's orchestration needs to react to sandbox state changes without
+polling. CI/CD pipelines need callbacks when sandboxes are ready or fail.
+
+**How:** Subscribe to k3s pod events via the gateway, stream as JSON lines.
+Webhook: POST events to a configured URL.
+
+**Scope:** ~400 LOC
+
+### P12: Sandbox Log Export
+
+**What:** `darkshell sandbox logs <name> --export <path>` exports all sandbox logs
+(gateway, proxy, agent) to a local file or directory.
+
+**Why:** Debugging factory failures requires correlating multiple log streams.
+Currently requires SSH + manual log collection.
+
+**How:** Aggregate logs from gateway + proxy + entrypoint into structured output.
+
+**Scope:** ~150 LOC
+
+### P13: Policy Validation (Dry-Run)
+
+**What:** `darkshell policy validate <file>` validates a policy YAML without applying it.
+`darkshell policy test <name> --host <host> --port <port> --binary <path>` tests
+whether a specific request would be allowed by the current policy.
+
+**Why:** Silent policy failures are the #1 debugging nightmare. Being able to test
+"would this request be allowed?" before running actual commands saves hours.
+
+**How:** Load policy into regorus engine, evaluate test query, report allow/deny + reason.
+
+**Scope:** ~300 LOC
+
+### P14: Sandbox Networking Diagnostics
+
+**What:** `darkshell sandbox net-test <name> --host <host> --port <port>` tests
+outbound connectivity from inside the sandbox, reporting: DNS resolution, proxy
+evaluation result (allow/deny + which policy matched), TLS handshake, HTTP response.
+
+**Why:** When agents can't reach a model provider, the operator needs to know WHERE
+in the chain it fails: DNS? proxy policy? TLS? upstream?
+
+**How:** Run diagnostic commands inside sandbox via exec, parse results.
+
+**Scope:** ~250 LOC
+
 ### What We Do NOT Change
 
 - **Landlock filesystem isolation** — kernel-enforced, stays as-is
