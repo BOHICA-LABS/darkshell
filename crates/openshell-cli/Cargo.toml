@@ -3,7 +3,7 @@
 
 [package]
 name = "openshell-cli"
-description = "OpenShell CLI tool"
+description = "DarkShell CLI — enhanced OpenShell for the DarkClaw factory ecosystem"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "openshell"
+name = "darkshell"
 path = "src/main.rs"
 
 [dependencies]

@@ -21,7 +21,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint
 cargo +nightly fmt --all           # Format (requires nightly)
 ```
 
-Rust 1.85+, Edition 2024.
+Rust 1.88+, Edition 2024.
 
 ## Git Workflow
 

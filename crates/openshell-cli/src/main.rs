@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `OpenShell` CLI - command-line interface for `OpenShell`.
+//! `DarkShell` CLI - command-line interface for `DarkShell`.
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
 use clap_complete::engine::ArgValueCompleter;
@@ -84,16 +84,16 @@ fn resolve_gateway(
         .ok_or_else(|| {
             miette::miette!(
                 "No active gateway.\n\
-                 Set one with: openshell gateway select <name>\n\
-                 Or deploy a new gateway: openshell gateway start"
+                 Set one with: darkshell gateway select <name>\n\
+                 Or deploy a new gateway: darkshell gateway start"
             )
         })?;
 
     let metadata = load_gateway_metadata(&name).map_err(|_| {
         miette::miette!(
             "Unknown gateway '{name}'.\n\
-             Deploy it first: openshell gateway start --name {name}\n\
-             Or list available gateways: openshell gateway select"
+             Deploy it first: darkshell gateway start --name {name}\n\
+             Or list available gateways: darkshell gateway select"
         )
     })?;
 
@@ -157,7 +157,7 @@ fn resolve_sandbox_name(name: Option<String>, gateway: &str) -> Result<String> {
 const HELP_TEMPLATE: &str = "\
 {about-with-newline}
 \x1b[1mUSAGE\x1b[0m
-  openshell <command> <subcommand> [flags]
+  darkshell <command> <subcommand> [flags]
 
 \x1b[1mSANDBOX COMMANDS\x1b[0m
   sandbox:     Manage sandboxes
@@ -174,7 +174,7 @@ const HELP_TEMPLATE: &str = "\
   doctor:      Diagnose gateway issues
 
 \x1b[1mADDITIONAL COMMANDS\x1b[0m
-  term:        Launch the OpenShell interactive TUI
+  term:        Launch the DarkShell interactive TUI
   completions: Generate shell completions
   ssh-proxy:   SSH proxy (used by ProxyCommand)
   help:        Print this message or the help of the given subcommand(s)
@@ -183,12 +183,12 @@ const HELP_TEMPLATE: &str = "\
 {options}
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell sandbox create
-  $ openshell gateway start
-  $ openshell logs my-sandbox
+  $ darkshell sandbox create
+  $ darkshell gateway start
+  $ darkshell logs my-sandbox
 
 \x1b[1mLEARN MORE\x1b[0m
-  Use `openshell <command> --help` for more information about a command.
+  Use `darkshell <command> --help` for more information about a command.
 ";
 
 // Help template for subcommands (sandbox, gateway, etc.)
@@ -217,101 +217,101 @@ const SANDBOX_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   sb
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell sandbox create
-  $ openshell sandbox create --from python
-  $ openshell sandbox connect my-sandbox
-  $ openshell sandbox list
-  $ openshell sandbox delete my-sandbox
+  $ darkshell sandbox create
+  $ darkshell sandbox create --from python
+  $ darkshell sandbox connect my-sandbox
+  $ darkshell sandbox list
+  $ darkshell sandbox delete my-sandbox
 ";
 
 const FORWARD_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   fwd
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell forward start 8080
-  $ openshell forward start 3000 my-sandbox
-  $ openshell forward stop 8080
-  $ openshell forward list
+  $ darkshell forward start 8080
+  $ darkshell forward start 3000 my-sandbox
+  $ darkshell forward stop 8080
+  $ darkshell forward list
 ";
 
 const LOGS_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   lg
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell logs my-sandbox
-  $ openshell logs my-sandbox --tail
-  $ openshell logs --since 5m
-  $ openshell logs --source sandbox --level debug
+  $ darkshell logs my-sandbox
+  $ darkshell logs my-sandbox --tail
+  $ darkshell logs --since 5m
+  $ darkshell logs --source sandbox --level debug
 ";
 
 const POLICY_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   pol
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell policy get my-sandbox
-  $ openshell policy set my-sandbox --policy policy.yaml
-  $ openshell policy set --global --policy policy.yaml
-  $ openshell policy delete --global
-  $ openshell policy list my-sandbox
+  $ darkshell policy get my-sandbox
+  $ darkshell policy set my-sandbox --policy policy.yaml
+  $ darkshell policy set --global --policy policy.yaml
+  $ darkshell policy delete --global
+  $ darkshell policy list my-sandbox
 ";
 
 const SETTINGS_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
-  $ openshell settings get my-sandbox
-  $ openshell settings get --global
-  $ openshell settings set my-sandbox --key log_level --value debug
-  $ openshell settings set --global --key log_level --value warn
-  $ openshell settings set --global --key dummy_bool --value yes
-  $ openshell settings set --global --key dummy_int --value 42
-  $ openshell settings delete --global --key log_level
+  $ darkshell settings get my-sandbox
+  $ darkshell settings get --global
+  $ darkshell settings set my-sandbox --key log_level --value debug
+  $ darkshell settings set --global --key log_level --value warn
+  $ darkshell settings set --global --key dummy_bool --value yes
+  $ darkshell settings set --global --key dummy_int --value 42
+  $ darkshell settings delete --global --key log_level
 ";
 
 const PROVIDER_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
-  $ openshell provider create --name openai --type openai --credential OPENAI_API_KEY
-  $ openshell provider create --name anthropic --type anthropic --from-existing
-  $ openshell provider list
-  $ openshell provider get openai
-  $ openshell provider delete openai
+  $ darkshell provider create --name openai --type openai --credential OPENAI_API_KEY
+  $ darkshell provider create --name anthropic --type anthropic --from-existing
+  $ darkshell provider list
+  $ darkshell provider get openai
+  $ darkshell provider delete openai
 ";
 
 const GATEWAY_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   gw
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell gateway start
-  $ openshell gateway start --name my-gateway --port 9090
-  $ openshell gateway stop
-  $ openshell gateway select my-gateway
-  $ openshell gateway info
+  $ darkshell gateway start
+  $ darkshell gateway start --name my-gateway --port 9090
+  $ darkshell gateway stop
+  $ darkshell gateway select my-gateway
+  $ darkshell gateway info
 ";
 
 const INFERENCE_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
-  $ openshell inference set --provider openai --model gpt-4
-  $ openshell inference get
-  $ openshell inference update --model gpt-4-turbo
+  $ darkshell inference set --provider openai --model gpt-4
+  $ darkshell inference get
+  $ darkshell inference update --model gpt-4-turbo
 ";
 
 const DOCTOR_HELP: &str = "\x1b[1mALIAS\x1b[0m
   dr
 
 \x1b[1mEXAMPLES\x1b[0m
-  $ openshell doctor check
-  $ openshell doctor logs --lines 100
-  $ openshell doctor exec -- kubectl get pods -A
-  $ openshell doctor llm.txt
+  $ darkshell doctor check
+  $ darkshell doctor logs --lines 100
+  $ darkshell doctor exec -- kubectl get pods -A
+  $ darkshell doctor llm.txt
 
 \x1b[1mAI AGENT USAGE\x1b[0m
   If you are a coding agent (LLM) diagnosing a gateway issue, run:
 
-    openshell doctor llm.txt
+    darkshell doctor llm.txt
 
   This prints a detailed diagnostic prompt with step-by-step instructions
-  for debugging gateway clusters using `openshell doctor logs` and
-  `openshell doctor exec`.
+  for debugging gateway clusters using `darkshell doctor logs` and
+  `darkshell doctor exec`.
 ";
 
-/// `OpenShell` CLI - agent execution and management.
+/// `DarkShell` CLI - agent execution and management.
 #[derive(Parser, Debug)]
-#[command(name = "openshell")]
+#[command(name = "darkshell")]
 #[command(author, version = openshell_core::VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 #[command(help_template = HELP_TEMPLATE)]
@@ -459,7 +459,7 @@ enum Commands {
     ///
     /// Inspect logs, run commands inside the gateway container, and get
     /// AI-assisted debugging guidance. If you are a coding agent, run
-    /// `openshell doctor llm.txt` for a full diagnostic prompt.
+    /// `darkshell doctor llm.txt` for a full diagnostic prompt.
     #[command(visible_alias = "dr", hide = true, after_help = DOCTOR_HELP, help_template = SUBCOMMAND_HELP_TEMPLATE)]
     Doctor {
         #[command(subcommand)]
@@ -469,7 +469,7 @@ enum Commands {
     // ===================================================================
     // ADDITIONAL COMMANDS
     // ===================================================================
-    /// Launch the `OpenShell` interactive TUI.
+    /// Launch the `DarkShell` interactive TUI.
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Term {
         /// Color theme for the TUI: auto, dark, or light.
@@ -489,10 +489,10 @@ enum Commands {
     /// Two mutually exclusive modes:
     ///
     /// **Token mode** (used internally by `sandbox connect`):
-    ///   `openshell ssh-proxy --gateway <url> --sandbox-id <id> --token <token>`
+    ///   `darkshell ssh-proxy --gateway <url> --sandbox-id <id> --token <token>`
     ///
     /// **Name mode** (for use in `~/.ssh/config`):
-    ///   `openshell ssh-proxy --gateway <name> --name <sandbox-name>`
+    ///   `darkshell ssh-proxy --gateway <name> --name <sandbox-name>`
     #[command(hide = true, help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     SshProxy {
         /// Gateway URL (e.g., <https://gw.example.com:443/proxy/connect>).
@@ -542,7 +542,7 @@ impl std::fmt::Display for CompletionShell {
 }
 
 const COMPLETIONS_HELP: &str = "\
-Generate shell completion scripts for OpenShell CLI.
+Generate shell completion scripts for DarkShell CLI.
 
 Supported shells: bash, fish, zsh, powershell.
 
@@ -556,22 +556,22 @@ shell before testing whether completions are working.
 First, ensure that you install `bash-completion` using your package manager.
 
   mkdir -p ~/.local/share/bash-completion/completions
-  openshell completions bash > ~/.local/share/bash-completion/completions/openshell
+  darkshell completions bash > ~/.local/share/bash-completion/completions/darkshell
 
 On macOS with Homebrew (install bash-completion first):
 
   mkdir -p $(brew --prefix)/etc/bash_completion.d
-  openshell completions bash > $(brew --prefix)/etc/bash_completion.d/openshell.bash-completion
+  darkshell completions bash > $(brew --prefix)/etc/bash_completion.d/darkshell.bash-completion
 
 \x1b[1mFISH\x1b[0m
 
   mkdir -p ~/.config/fish/completions
-  openshell completions fish > ~/.config/fish/completions/openshell.fish
+  darkshell completions fish > ~/.config/fish/completions/darkshell.fish
 
 \x1b[1mZSH\x1b[0m
 
   mkdir -p ~/.zfunc
-  openshell completions zsh > ~/.zfunc/_openshell
+  darkshell completions zsh > ~/.zfunc/_darkshell
 
 Then add the following to your .zshrc before compinit:
 
@@ -579,7 +579,7 @@ Then add the following to your .zshrc before compinit:
 
 \x1b[1mPOWERSHELL\x1b[0m
 
-   openshell completions powershell >> $PROFILE
+   darkshell completions powershell >> $PROFILE
 
 If no profile exists yet, create one first:
 
@@ -589,7 +589,7 @@ If no profile exists yet, create one first:
 fn normalize_completion_script(output: Vec<u8>, executable: &std::path::Path) -> Result<String> {
     let script = String::from_utf8(output)
         .map_err(|e| miette::miette!("generated completions were not valid UTF-8: {e}"))?;
-    Ok(script.replace(executable.to_string_lossy().as_ref(), "openshell"))
+    Ok(script.replace(executable.to_string_lossy().as_ref(), "darkshell"))
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -845,7 +845,7 @@ enum GatewayCommands {
 
     /// Add an existing gateway.
     ///
-    /// Registers a gateway endpoint so it appears in `openshell gateway select`.
+    /// Registers a gateway endpoint so it appears in `darkshell gateway select`.
     ///
     /// Without extra flags the gateway is treated as an edge-authenticated
     /// (cloud) gateway and a browser is opened for authentication.
@@ -1006,9 +1006,9 @@ enum DoctorCommands {
     /// the session is tunnelled over SSH automatically.
     ///
     /// Examples:
-    ///   openshell doctor exec -- kubectl get pods -A
-    ///   openshell doctor exec -- k9s
-    ///   openshell doctor exec -- sh
+    ///   darkshell doctor exec -- kubectl get pods -A
+    ///   darkshell doctor exec -- k9s
+    ///   darkshell doctor exec -- sh
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Exec {
         /// Gateway name (defaults to active gateway).
@@ -1031,12 +1031,12 @@ enum DoctorCommands {
     /// Print a diagnostic prompt for AI-assisted gateway debugging.
     ///
     /// Outputs a system prompt that a coding agent can use to autonomously
-    /// diagnose gateway issues using `openshell doctor logs` and
-    /// `openshell doctor exec`.
+    /// diagnose gateway issues using `darkshell doctor logs` and
+    /// `darkshell doctor exec`.
     ///
     /// Examples:
-    ///   openshell doctor llm.txt
-    ///   openshell doctor llm.txt | pbcopy
+    ///   darkshell doctor llm.txt
+    ///   darkshell doctor llm.txt | pbcopy
     #[command(name = "llm.txt", help_template = LEAF_HELP_TEMPLATE)]
     LlmTxt,
 
@@ -1044,10 +1044,10 @@ enum DoctorCommands {
     ///
     /// Checks that a Docker-compatible runtime is installed, running, and
     /// reachable. Reports version info and socket path. Use this to verify
-    /// your environment before running `openshell gateway start`.
+    /// your environment before running `darkshell gateway start`.
     ///
     /// Examples:
-    ///   openshell doctor check
+    ///   darkshell doctor check
     #[command(help_template = LEAF_HELP_TEMPLATE)]
     Check,
 }
@@ -1619,8 +1619,8 @@ async fn main() -> Result<()> {
                     .ok_or_else(|| {
                         miette::miette!(
                             "No active gateway.\n\
-                             Specify a gateway name: openshell gateway login <name>\n\
-                             Or set one with: openshell gateway select <name>"
+                             Specify a gateway name: darkshell gateway login <name>\n\
+                             Or set one with: darkshell gateway select <name>"
                         )
                     })?;
                 run::gateway_login(&name).await?;
@@ -1695,7 +1695,7 @@ async fn main() -> Result<()> {
                 println!();
                 println!(
                     "Deploy a gateway with: {}",
-                    "openshell gateway start".dimmed()
+                    "darkshell gateway start".dimmed()
                 );
             }
         }
@@ -1795,7 +1795,7 @@ async fn main() -> Result<()> {
                         spec.port,
                     );
                     eprintln!("  Access at: {}", spec.access_url());
-                    eprintln!("  Stop with: openshell forward stop {} {name}", spec.port);
+                    eprintln!("  Stop with: darkshell forward stop {} {name}", spec.port);
                 }
             }
         },
@@ -2133,7 +2133,7 @@ async fn main() -> Result<()> {
                             if remote.is_some() {
                                 eprintln!(
                                     "{} --remote ignored: gateway '{}' is already active. \
-                                     To redeploy, use: openshell gateway start",
+                                     To redeploy, use: darkshell gateway start",
                                     "!".yellow(),
                                     ctx.name,
                                 );
@@ -2395,8 +2395,8 @@ async fn main() -> Result<()> {
                         let meta = load_gateway_metadata(&g).map_err(|_| {
                             miette::miette!(
                                 "Unknown gateway '{g}'.\n\
-                                  Deploy it first: openshell gateway start --name {g}\n\
-                                  Or list available gateways: openshell gateway select"
+                                  Deploy it first: darkshell gateway start --name {g}\n\
+                                  Or list available gateways: darkshell gateway select"
                             )
                         })?;
                         meta.gateway_endpoint
@@ -2555,7 +2555,7 @@ mod tests {
     #[test]
     fn completions_engine_returns_candidates() {
         let mut cmd = Cli::command();
-        let args: Vec<OsString> = vec!["openshell".into(), "".into()];
+        let args: Vec<OsString> = vec!["darkshell".into(), "".into()];
         let candidates = clap_complete::engine::complete(&mut cmd, args, 1, None)
             .expect("completion engine failed");
         let names: Vec<String> = candidates
@@ -2584,7 +2584,7 @@ mod tests {
     #[test]
     fn completions_subcommand_appears_in_candidates() {
         let mut cmd = Cli::command();
-        let args: Vec<OsString> = vec!["openshell".into(), "comp".into()];
+        let args: Vec<OsString> = vec!["darkshell".into(), "comp".into()];
         let candidates = clap_complete::engine::complete(&mut cmd, args, 1, None)
             .expect("completion engine failed");
         let names: Vec<String> = candidates
@@ -2605,7 +2605,7 @@ mod tests {
 
         let mut cmd = Cli::command();
         let args: Vec<OsString> = vec![
-            "openshell".into(),
+            "darkshell".into(),
             "sandbox".into(),
             "create".into(),
             "--policy".into(),
@@ -2634,28 +2634,28 @@ mod tests {
 
         let cases: Vec<(Vec<&str>, usize, &str)> = vec![
             (
-                vec!["openshell", "gateway", "start", "--ssh-key", "id"],
+                vec!["darkshell", "gateway", "start", "--ssh-key", "id"],
                 4,
                 "id_rsa",
             ),
             (
-                vec!["openshell", "sandbox", "create", "--ssh-key", "id"],
+                vec!["darkshell", "sandbox", "create", "--ssh-key", "id"],
                 4,
                 "id_rsa",
             ),
             (
-                vec!["openshell", "sandbox", "upload", "demo", "Do"],
+                vec!["darkshell", "sandbox", "upload", "demo", "Do"],
                 4,
                 "Dockerfile",
             ),
             (
-                vec!["openshell", "sandbox", "create", "--from", "Do"],
+                vec!["darkshell", "sandbox", "create", "--from", "Do"],
                 4,
                 "Dockerfile",
             ),
             (
                 vec![
-                    "openshell",
+                    "darkshell",
                     "sandbox",
                     "download",
                     "demo",
@@ -2711,7 +2711,7 @@ mod tests {
 
         let mut cmd = Cli::command();
         let args: Vec<OsString> = vec![
-            "openshell".into(),
+            "darkshell".into(),
             "sandbox".into(),
             "upload".into(),
             "demo".into(),
@@ -2743,9 +2743,9 @@ mod tests {
                 .expect("store gateway beta");
 
             for (raw_args, index) in [
-                (vec!["openshell", "--gateway", "a"], 2),
-                (vec!["openshell", "gateway", "select", "a"], 3),
-                (vec!["openshell", "gateway", "info", "--name", "a"], 4),
+                (vec!["darkshell", "--gateway", "a"], 2),
+                (vec!["darkshell", "gateway", "select", "a"], 3),
+                (vec!["darkshell", "gateway", "info", "--name", "a"], 4),
             ] {
                 let mut cmd = Cli::command();
                 let args: Vec<OsString> = raw_args.iter().copied().map(Into::into).collect();
@@ -2766,7 +2766,7 @@ mod tests {
 
     #[test]
     fn global_gateway_flag_still_parses_with_subcommands() {
-        let cli = Cli::try_parse_from(["openshell", "--gateway", "demo", "status"])
+        let cli = Cli::try_parse_from(["darkshell", "--gateway", "demo", "status"])
             .expect("global gateway flag should parse with subcommands");
 
         assert_eq!(cli.gateway.as_deref(), Some("demo"));
@@ -2775,7 +2775,7 @@ mod tests {
 
     #[test]
     fn hidden_aliases_still_parse() {
-        let cli = Cli::try_parse_from(["openshell", "lg", "sandbox-1"])
+        let cli = Cli::try_parse_from(["darkshell", "lg", "sandbox-1"])
             .expect("hidden aliases should still parse");
 
         assert!(matches!(
@@ -2787,7 +2787,7 @@ mod tests {
     #[test]
     fn inference_set_accepts_no_verify_flag() {
         let cli = Cli::try_parse_from([
-            "openshell",
+            "darkshell",
             "inference",
             "set",
             "--provider",
@@ -2812,7 +2812,7 @@ mod tests {
     #[test]
     fn inference_update_accepts_no_verify_flag() {
         let cli = Cli::try_parse_from([
-            "openshell",
+            "darkshell",
             "inference",
             "update",
             "--provider",
@@ -2833,15 +2833,15 @@ mod tests {
     }
 
     #[test]
-    fn completion_script_uses_openshell_command_name() {
+    fn completion_script_uses_darkshell_command_name() {
         let script = normalize_completion_script(
-            b"/tmp/custom/openshell -- \"${words[@]}\"\n#compdef openshell\n".to_vec(),
-            std::path::Path::new("/tmp/custom/openshell"),
+            b"/tmp/custom/darkshell -- \"${words[@]}\"\n#compdef darkshell\n".to_vec(),
+            std::path::Path::new("/tmp/custom/darkshell"),
         )
         .expect("normalize completion script");
 
-        assert!(script.contains("openshell -- \"${words[@]}\""));
-        assert!(!script.contains("/tmp/custom/openshell"));
+        assert!(script.contains("darkshell -- \"${words[@]}\""));
+        assert!(!script.contains("/tmp/custom/darkshell"));
     }
 
     #[test]
@@ -2987,7 +2987,7 @@ mod tests {
         // This is the exact flag pattern constructed by the TUI in lib.rs
         // (handle_shell_connect, handle_exec, handle_port_forward).
         let cli = Cli::try_parse_from([
-            "openshell",
+            "darkshell",
             "ssh-proxy",
             "--gateway",
             "https://gw.example.com:8080/proxy/connect",
@@ -3024,7 +3024,7 @@ mod tests {
     #[test]
     fn settings_set_global_parses_yes_flag() {
         let cli = Cli::try_parse_from([
-            "openshell",
+            "darkshell",
             "settings",
             "set",
             "--global",
@@ -3058,7 +3058,7 @@ mod tests {
 
     #[test]
     fn settings_get_global_parses() {
-        let cli = Cli::try_parse_from(["openshell", "settings", "get", "--global"])
+        let cli = Cli::try_parse_from(["darkshell", "settings", "get", "--global"])
             .expect("settings get --global should parse");
 
         match cli.command {
@@ -3074,7 +3074,7 @@ mod tests {
 
     #[test]
     fn policy_delete_global_parses() {
-        let cli = Cli::try_parse_from(["openshell", "policy", "delete", "--global", "--yes"])
+        let cli = Cli::try_parse_from(["darkshell", "policy", "delete", "--global", "--yes"])
             .expect("policy delete --global should parse");
 
         match cli.command {
@@ -3091,7 +3091,7 @@ mod tests {
     #[test]
     fn settings_delete_global_parses_yes_flag() {
         let cli = Cli::try_parse_from([
-            "openshell",
+            "darkshell",
             "settings",
             "delete",
             "--global",
