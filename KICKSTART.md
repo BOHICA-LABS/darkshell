@@ -9,6 +9,31 @@ with quality-of-life enhancements for the DarkClaw factory ecosystem.
 
 ---
 
+## Phase 0: Fork + Rename + Verify
+
+Before any enhancements, establish the fork:
+
+```bash
+cd /Users/jmagady/Dev/DarkShell
+git remote add upstream https://github.com/NVIDIA/OpenShell.git
+git fetch upstream
+git merge upstream/main --allow-unrelated-histories
+
+# Rename binary: openshell → darkshell
+# Update Cargo.toml: package name, description, repository URL
+# Update CLI help text and binary name references
+
+# Verify everything builds and passes
+cargo build
+cargo test
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+**The first story (DC-S001) should be this fork + rename + green build.**
+No enhancements until upstream builds and tests pass under the new name.
+
+---
+
 ## Why Fork
 
 OpenShell provides excellent kernel-level sandbox isolation (Landlock + seccomp + netns)
