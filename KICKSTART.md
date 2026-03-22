@@ -289,6 +289,47 @@ in the chain it fails: DNS? proxy policy? TLS? upstream?
 
 **Scope:** ~250 LOC
 
+### Sandbox Mutability Model (from source analysis)
+
+**Kernel-locked (irreversible after creation):**
+- Landlock filesystem policy — `ruleset.restrict_self()` is a one-way kernel operation
+- seccomp syscall filters — `PR_SET_NO_NEW_PRIVS` + BPF filter is irreversible
+- Network namespace — veth pair and routing locked at creation
+- Process identity — `setuid`/`setgid` applied before sandbox::apply
+
+**Hot-reloadable (atomic swap, no restart):**
+- Network policies — OPA engine `reload_from_proto()` builds new engine, validates, swaps
+- Inference configuration — model provider routing
+
+**Implication:** Tools/packages cannot be installed at runtime into system directories.
+The only supported path is pre-baking everything into the container image before sandbox
+creation. See P34 (Blueprints) for our solution.
+
+### MCP Support (current state)
+
+OpenShell has no first-class MCP server management. MCP integration uses a
+host-to-sandbox bridge pattern:
+- MCP servers run on the **host**, not inside the sandbox
+- A stdio-to-HTTP proxy bridges them in via `openshell forward`
+- Credentials stay on the host — agents never see raw API keys
+- All traffic passes through the network policy proxy
+
+**Gaps:** No MCP CLI commands, no tool-level policy, no in-sandbox stdio support,
+no managed bridge daemon, no MCP server discovery/catalog.
+
+### Observability (current state)
+
+OpenShell provides policy decision logging (allow/deny for every action) stored in
+customer infrastructure. Exportable via Docker log drivers to SIEM platforms.
+
+**Gaps:** No real-time agent activity view, no file access audit trail (only Landlock
+denials, not successful reads/writes), no syscall tracing, no MCP tool call logging,
+no OpenTelemetry/Prometheus integration, no behavioral anomaly detection, no process
+tree tracing, no inference content logging.
+
+Enterprise partners (Cisco AI Defense, CrowdStrike Falcon, Trend Micro TrendAI) fill
+some gaps but require external integration.
+
 ### What We Do NOT Change
 
 - **Landlock filesystem isolation** — kernel-enforced, stays as-is
@@ -403,6 +444,408 @@ users checkpoint before risky operations.
 
 ---
 
+## Enhancements: Orchestration & Lifecycle (P15–P18)
+
+### P15: Multi-Sandbox Orchestration
+
+**What:** Coordinate policies, shared state, and lifecycle across multiple sandboxes
+from a single DarkClaw orchestration layer.
+
+**Why:** DarkClaw runs multiple agents across sandboxes. No built-in way to manage
+them as a fleet — each sandbox is an island.
+
+**How:** Gateway-level coordination API. Each sandbox retains its own isolation.
+
+**Scope:** ~600 LOC
+
+### P16: Observability Export Adapters
+
+**What:** Structured adapters to pipe OpenShell audit logs to SIEM/observability
+platforms (Splunk, Datadog, Grafana, OpenSearch).
+
+**Why:** OpenShell generates logs but provides zero tooling to forward them.
+
+**How:** Pluggable exporter interface with built-in adapters for common platforms.
+
+**Scope:** ~400 LOC
+
+### P17: Policy-as-Code GitOps Integration
+
+**What:** `git push` a policy change and have it automatically apply to running
+sandboxes via reconciliation loop.
+
+**Why:** Docs recommend storing policies in git but provide no reconciliation tooling.
+
+**How:** Watch a git repo/branch for policy YAML changes, auto-apply via `policy set`.
+
+**Scope:** ~300 LOC
+
+### P18: Credential Rotation for Running Sandboxes
+
+**What:** Rotate provider credentials on running sandboxes without delete + recreate.
+
+**Why:** Long-running agents (hours/days) need credential rotation. Current model
+requires destroying the sandbox.
+
+**How:** Extend provider system to support credential refresh via gateway API.
+
+**Scope:** ~200 LOC
+
+---
+
+## Enhancements: MCP Integration (P19–P24)
+
+### P19: MCP Bridge Daemon
+
+**What:** `darkshell mcp bridge` — a managed stdio-to-HTTP proxy that DarkShell
+starts/stops automatically when sandboxes use MCP servers.
+
+**Why:** Current MCP integration requires manual setup of stdio-to-HTTP proxies
+and port forwards. This is the biggest friction for factory workflows.
+
+**How:**
+- Host-side daemon spawns MCP server subprocesses with host credentials
+- Exposes them as HTTP endpoints
+- Auto-configures port forwards into sandbox
+- Credentials stay on host — agent never sees raw API keys
+
+**Scope:** ~500 LOC
+
+**Security:** Host-side only. Sandbox sees an HTTP endpoint through existing
+port forward mechanism. No security model changes.
+
+### P20: MCP CLI Management
+
+**What:** `darkshell mcp add/list/remove <sandbox>` — first-class CLI for
+registering MCP servers with sandboxes.
+
+**Why:** Currently requires manual network policy edits + port forward setup
+for every MCP server.
+
+**How:**
+- `mcp add` registers server, auto-configures network policy + port forward
+- `mcp list` shows connected MCP servers and their status
+- `mcp remove` tears down bridge + port forward + policy entry
+
+**Scope:** ~300 LOC
+
+**Security:** Automates existing mechanisms (policy set + forward start). No new
+capabilities granted.
+
+### P21: MCP Tool-Level Policy
+
+**What:** Extend policy YAML to allow/deny specific MCP tools by name.
+
+**Why:** If an agent can reach an MCP server, it currently gets ALL tools.
+Can't restrict to read-only tools vs. destructive ones.
+
+**How:** Add `allowed_tools` / `denied_tools` fields to network policy blocks.
+Enforce at the MCP bridge layer via request inspection.
+
+**Scope:** ~200 LOC
+
+**Security:** Adds MORE restriction. Strictly tightens the security model.
+
+### P22: In-Sandbox stdio MCP Support
+
+**What:** Run MCP servers inside the sandbox for filesystem-only tools (e.g., Tally)
+that don't need external network or credentials.
+
+**Why:** Not all MCP servers need the host bridge. Filesystem-only servers like
+Tally can run inside the sandbox safely.
+
+**How:** Agent spawns MCP server as subprocess inside sandbox. Server inherits
+all sandbox restrictions (Landlock, seccomp, netns).
+
+**Scope:** ~100 LOC (mostly documentation and example policies)
+
+**Security:** MCP server inherits ALL sandbox restrictions. More constrained than
+host-side. No security model changes.
+
+### P23: MCP Credential Isolation
+
+**What:** MCP servers get credentials via the provider system without exposing
+them to the agent process.
+
+**Why:** MCP servers often need API keys (Perplexity, Tavily). These should flow
+through the provider system, not be visible to the agent.
+
+**How:** Bridge daemon receives credentials from gateway provider API. Injects
+into MCP server subprocess environment. Agent process never sees them.
+
+**Scope:** ~150 LOC
+
+**Security:** Strengthens credential isolation. Extends existing provider model.
+
+### P24: Streamable HTTP MCP Transport
+
+**What:** Native support for the modern MCP transport (Streamable HTTP, spec
+2025-03-26) which consolidates bidirectional communication through a single
+`/mcp` endpoint.
+
+**Why:** Eliminates the stdio subprocess problem entirely. Agents connect to
+MCP servers via standard HTTP — goes through existing proxy and OPA evaluation.
+
+**How:** MCP servers expose Streamable HTTP endpoints. Network policy allowlists
+them like any other endpoint. No bridge needed for remote servers.
+
+**Scope:** ~200 LOC (client-side support in agent configuration)
+
+**Security:** Standard HTTP through existing proxy. OPA evaluates it like any
+other connection. No security model changes.
+
+---
+
+## Enhancements: Observability (P25–P31)
+
+### P25: Live Sandbox Watch
+
+**What:** `darkshell sandbox watch <name>` — real-time event stream showing
+commands executed, files changed, network requests, and policy decisions as
+they happen. JSON lines output for piping to dashboards.
+
+**Why:** Currently no way to see what an agent is doing in real-time. Only
+after-the-fact log retrieval.
+
+**How:** Aggregate gateway logs, proxy decisions, and sandbox events into a
+unified stream. Subscribe via long-poll or SSE.
+
+**Scope:** ~400 LOC
+
+**Security:** Read-only observation. Does not modify sandbox state.
+
+### P26: OpenTelemetry Exporter
+
+**What:** Native OTel metrics (policy decisions/sec, actions by type, latency
+histograms) and traces (action→policy eval→decision chain).
+
+**Why:** No integration with modern observability stacks (Prometheus, Grafana,
+Jaeger). Operators must build custom exporters.
+
+**How:** Instrument gateway and proxy with `opentelemetry` crate. Export via
+OTLP to any OTel-compatible backend.
+
+**Scope:** ~400 LOC
+
+**Security:** Exports metrics from gateway/proxy. Observes, doesn't modify.
+
+### P27: File Access Audit Log
+
+**What:** Log every successful file read/write/delete inside the sandbox, not
+just Landlock denials.
+
+**Why:** Landlock blocks violations but doesn't surface which files were
+successfully accessed. Critical for compliance and forensics.
+
+**How:** Use eBPF (fanotify) to observe file operations without performance
+impact. Structured log: path, operation, process, timestamp.
+
+**Scope:** ~500 LOC
+
+**Security:** Read-only monitoring via eBPF. Does not modify sandbox state
+or weaken Landlock enforcement.
+
+### P28: MCP Tool Call Logging
+
+**What:** Structured log of every MCP tool invocation: server name, tool name,
+arguments, response summary, duration.
+
+**Why:** No visibility into which MCP tools are being invoked or what data
+flows through them.
+
+**How:** Captured at the MCP bridge layer (P19). Bridge logs all requests
+passing through it.
+
+**Scope:** ~150 LOC (part of P19 bridge implementation)
+
+**Security:** Logging at bridge layer (host-side). Read-only.
+
+### P29: Process Tree Tracing
+
+**What:** Track every process spawned inside the sandbox: parent→child,
+command line, exit code, duration.
+
+**Why:** Can't see the full process tree — what commands the agent spawned,
+what subprocesses ran, what failed.
+
+**How:** eBPF process events (exec, exit) scoped to sandbox PID namespace.
+
+**Scope:** ~300 LOC
+
+**Security:** Read-only eBPF observation. Does not modify sandbox.
+
+### P30: Inference Request/Response Logging
+
+**What:** Log prompts sent to model providers and responses received, with
+configurable redaction for sensitive data.
+
+**Why:** Privacy router routes requests but doesn't log content. Can't detect
+prompt injection or data exfiltration through inference.
+
+**How:** Tap the privacy router's request/response pipeline. Configurable
+redaction rules (strip PII, limit response size, hash sensitive fields).
+
+**Scope:** ~300 LOC
+
+**Security:** Read-only logging at privacy router. Redaction prevents
+sensitive data from appearing in logs.
+
+### P31: Behavioral Baseline and Alerting
+
+**What:** Establish per-sandbox behavioral baselines (normal network patterns,
+file access patterns, command frequency). Alert on deviations.
+
+**Why:** No anomaly detection. Can't detect "agent suddenly making 1000x more
+network requests than usual."
+
+**How:** Collect metrics from P25-P30, compute rolling baselines, alert when
+current behavior exceeds threshold.
+
+**Scope:** ~400 LOC
+
+**Security:** Analysis of existing logs. Read-only. Strengthens security by
+detecting anomalous agent behavior.
+
+---
+
+## Enhancements: Workspace & Tooling (P33–P34)
+
+### P33: Sandbox Image Save (with sanitization)
+
+**What:** `darkshell sandbox image save <name> <tag>` saves current sandbox
+state as a new base image for future sandboxes.
+
+**Why:** Avoids the "rebuild Dockerfile from scratch" cycle when an agent has
+set up a useful environment.
+
+**How:**
+- Commit container state to new image
+- **Mandatory sanitization:** strip environment variables, clear provider
+  credentials, remove temp files, scrub known sensitive paths
+- Requires explicit operator approval (`--confirm`)
+
+**Scope:** ~300 LOC
+
+**Security:** Credential stripping prevents sensitive data leakage. Operator
+approval required. Does not modify running sandbox isolation.
+
+### P34: Sandbox Blueprints
+
+**What:** Versioned, declarative sandbox definitions as a single YAML file:
+image + policy + providers + MCP servers + port forwards + resource limits.
+
+**Why:** The right answer for "agents need tools at runtime" is making sandbox
+creation trivial, not weakening sandbox immutability. Blueprints make it
+one command to create a fully-configured sandbox.
+
+**How:**
+```yaml
+# darkshell-blueprint.yaml
+name: dark-factory-agent
+image: ghcr.io/bohica-labs/darkshell-factory:latest
+policy: policies/factory-agent.yaml
+providers: [github, anthropic]
+mcp_servers:
+  - name: perplexity
+    transport: bridge
+    command: npx -y @anthropic/perplexity-mcp
+    env: [PERPLEXITY_API_KEY]
+  - name: tally
+    transport: in-sandbox
+    command: /opt/mcp-servers/tally
+forwards: [8080, 3000]
+resources:
+  cpu: "2"
+  memory: "4Gi"
+```
+
+One command: `darkshell sandbox create --from blueprint.yaml`
+
+**Scope:** ~400 LOC
+
+**Security:** Declarative config that creates sandboxes using existing mechanisms.
+No new capabilities. Version-controlled and auditable.
+
+---
+
+## Security Analysis of Enhancements
+
+All 32 enhancements were evaluated against OpenShell's five security promises:
+
+1. **Landlock** — kernel-enforced filesystem isolation (irreversible)
+2. **seccomp** — kernel-enforced syscall filtering (irreversible)
+3. **Network namespace** — all traffic through OPA-evaluated proxy
+4. **SSRF protection** — loopback/link-local/RFC1918 always blocked
+5. **Credential isolation** — providers inject secrets, agents never see raw keys
+
+### Verdict
+
+| Category | Count | Security Impact |
+|---|---|---|
+| No impact (client-side, host-side, read-only) | 25 | None — operates outside security boundary |
+| Strengthens security | 5 | P9 (resource limits), P13 (policy validation), P21 (tool-level policy), P23 (credential isolation), P31 (anomaly detection) |
+| Requires care | 1 | P33 (image save) — mandatory credential stripping + operator approval |
+| Rejected | 2 | ~~P32 (sandbox extend)~~, ~~P35 (writable overlay)~~ — violate Landlock immutability |
+
+**No enhancement weakens or bypasses any kernel-enforced security mechanism.**
+
+### Enhancements Explicitly Rejected
+
+- **~~P32: `sandbox extend --install`~~** — Would require writing to Landlock-protected
+  system directories. `restrict_self()` is irreversible. Rejected.
+- **~~P35: Writable tool overlay~~** — Mounting a writable overlay at `/usr/local/`
+  circumvents what Landlock is designed to prevent. A compromised agent could install
+  persistent backdoors. Rejected.
+
+The correct solution is P34 (Blueprints): make sandbox creation trivial so that
+recreating with new tools is fast and painless.
+
+---
+
+## Enhancement Summary
+
+| # | Enhancement | Category | Priority |
+|---|---|---|---|
+| P1 | Delta upload (rsync mode) | File Transfer | Must |
+| P2 | Multiple `--upload` on create | File Transfer | Must |
+| P3 | Exec command | Execution | Must |
+| P4 | Upload progress reporting | Observability | Must |
+| P5 | Download filtering | File Transfer | Should |
+| P6 | Sandbox snapshots | Lifecycle | Nice |
+| P7 | Upload dry-run and diff | File Transfer | Should |
+| P8 | Sandbox health monitoring | Observability | Nice |
+| P9 | Sandbox resource limits | Lifecycle | Nice |
+| P10 | Streaming progress with ETA | Observability | Should |
+| P11 | Sandbox events / webhooks | Orchestration | Nice |
+| P12 | Sandbox log export | Operational | Nice |
+| P13 | Policy validation (dry-run) | Policy | Nice |
+| P14 | Sandbox networking diagnostics | Policy | Nice |
+| P15 | Multi-sandbox orchestration | Orchestration | Nice |
+| P16 | Observability export adapters | Operational | Nice |
+| P17 | Policy-as-code GitOps | Policy | Nice |
+| P18 | Credential rotation | Lifecycle | Nice |
+| P19 | MCP bridge daemon | MCP | Must |
+| P20 | MCP CLI management | MCP | Must |
+| P21 | MCP tool-level policy | MCP | Nice |
+| P22 | In-sandbox stdio MCP | MCP | Should |
+| P23 | MCP credential isolation | MCP | Should |
+| P24 | Streamable HTTP MCP transport | MCP | Should |
+| P25 | Live sandbox watch | Observability | Should |
+| P26 | OpenTelemetry exporter | Observability | Nice |
+| P27 | File access audit log | Observability | Nice |
+| P28 | MCP tool call logging | Observability | Should |
+| P29 | Process tree tracing | Observability | Nice |
+| P30 | Inference request/response logging | Observability | Nice |
+| P31 | Behavioral baseline + alerting | Observability | Nice |
+| P33 | Sandbox image save (sanitized) | Workspace | Nice |
+| P34 | Sandbox blueprints | Workspace | Must |
+
+**Must (7):** P1, P2, P3, P4, P19, P20, P34
+**Should (8):** P5, P7, P10, P22, P23, P24, P25, P28
+**Nice (17):** P6, P8, P9, P11–P18, P21, P26, P27, P29–P31, P33
+
+---
+
 ## Fork Strategy
 
 1. **Fork** `NVIDIA/OpenShell` to `BOHICA-LABS/darkshell`
@@ -419,15 +862,28 @@ users checkpoint before risky operations.
 DarkClaw (orchestration)
   │
   ├── Uses darkshell (if available) — enhanced features
-  │     └── Delta upload, exec, snapshots, progress
+  │     ├── Delta upload, exec, progress, blueprints
+  │     ├── MCP bridge + management (factory MCP servers)
+  │     └── Observability (live watch, OTel, audit logs)
   │
   └── Falls back to openshell — upstream, always works
-        └── Full tar upload, SSH for commands, no snapshots
+        └── Full tar upload, SSH for commands, manual MCP setup
 ```
 
 DarkClaw v1 ships with upstream OpenShell support. DarkShell enhancements are
 additive — DarkClaw gains speed and UX when DarkShell is installed but never
 requires it.
+
+### Dark Factory Integration
+
+The dark factory runs VSDD pipeline phases inside DarkShell sandboxes:
+- **Spec phases:** Read/write `.factory/` artifacts, git operations
+- **Implementation phases:** `cargo build`, `cargo test`, `cargo clippy` via exec
+- **Review phases:** MCP servers (Perplexity for research, Tally for findings)
+- **All phases:** Observability for monitoring agent progress and behavior
+
+DarkShell blueprints (P34) define the complete factory sandbox environment:
+image + policy + providers + MCP servers + port forwards in one YAML file.
 
 ---
 
