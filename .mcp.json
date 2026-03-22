@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "perplexity": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@perplexity-ai/mcp-server"
+      ],
+      "env": {
+        "PERPLEXITY_API_KEY": "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"
+      }
+    },
+    "tavily": {
+      "type": "http",
+      "url": "https://mcp.tavily.com/mcp/?tavilyApiKey=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"
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
+    "tally": {
+      "type": "stdio",
+      "command": "tally",
+      "args": [
+        "mcp-server"
+      ]
+    }
+  }
+}
