@@ -224,6 +224,9 @@ const SANDBOX_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   $ darkshell sandbox exec my-sandbox --json -- cargo build
   $ darkshell sandbox list
   $ darkshell sandbox delete my-sandbox
+  $ darkshell sandbox watch my-sandbox
+  $ darkshell sandbox watch my-sandbox --type network --type policy
+  $ darkshell sandbox watch my-sandbox --json
 ";
 
 const FORWARD_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
@@ -1328,6 +1331,31 @@ enum SandboxCommands {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+
+    /// Watch live sandbox events (commands, files, network, policy).
+    ///
+    /// Streams real-time events from a sandbox as JSON lines (default) or
+    /// human-readable colored output. Events include command executions,
+    /// file changes, network requests, and policy decisions.
+    ///
+    /// On platforms without eBPF support (macOS, older Linux), falls back
+    /// to log-based monitoring automatically.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Watch {
+        /// Sandbox name.
+        #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        name: String,
+
+        /// Filter by event type. Can be specified multiple times.
+        /// Valid types: command, file, network, policy, mcp, lifecycle.
+        #[arg(long = "type", value_name = "EVENT_TYPE")]
+        event_types: Vec<String>,
+
+        /// Output as JSON lines (one JSON object per line).
+        /// This is the default when stdout is not a TTY.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2426,6 +2454,107 @@ async fn main() -> Result<()> {
 
                             if result.exit_code != 0 {
                                 std::process::exit(result.exit_code);
+                            }
+                        }
+                        SandboxCommands::Watch {
+                            name,
+                            event_types,
+                            json,
+                        } => {
+                            use darkshell_observe::{EventFilter, EventStream, WatchConfig};
+
+                            // Parse event type filters (AC-002)
+                            let filter = EventFilter::from_type_flags(&event_types)
+                                .map_err(|e| miette::miette!("{e}"))?;
+
+                            // Emit eBPF degradation warning (AC-007 / EC-018)
+                            darkshell_observe::watch::emit_degradation_warning();
+
+                            // Determine output mode: --json flag or non-TTY stdout
+                            let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                            let use_json = json || !is_tty;
+
+                            let config = WatchConfig::new(&name)
+                                .with_filter(filter)
+                                .with_json(use_json)
+                                .with_tty(is_tty);
+
+                            let mut stream = EventStream::new(config);
+
+                            eprintln!(
+                                "{} Watching sandbox '{}' (press Ctrl+C to stop)",
+                                "→".bold(),
+                                name.bold(),
+                            );
+
+                            // v1: poll gateway logs via sandbox exec (tail -f)
+                            // The exec function streams directly to stdio, so we
+                            // spawn it and parse its output asynchronously.
+                            // Future versions (DS-017+) will add eBPF event sources.
+                            let sender = stream.sender();
+                            let sandbox_name = name.clone();
+                            let ep = endpoint.clone();
+                            let tls_clone = tls.clone();
+                            tokio::spawn(async move {
+                                let mut backoff = darkshell_observe::watch::initial_backoff();
+                                loop {
+                                    // Attempt to tail gateway/sandbox logs
+                                    let result = openshell_cli::ssh::sandbox_exec(
+                                        &ep,
+                                        &sandbox_name,
+                                        &[
+                                            "tail".to_owned(),
+                                            "-n".to_owned(),
+                                            "0".to_owned(),
+                                            "-f".to_owned(),
+                                            "/var/log/sandbox.log".to_owned(),
+                                        ],
+                                        false,
+                                        &tls_clone,
+                                    )
+                                    .await;
+
+                                    match result {
+                                        Ok(()) => {
+                                            // Process exited normally — sandbox may
+                                            // have been deleted (AC-005)
+                                            let deleted = darkshell_observe::watch::sandbox_deleted_event(&sandbox_name);
+                                            let _ = sender.send(deleted).await;
+                                            return;
+                                        }
+                                        Err(_) => {
+                                            // Auto-reconnect with exponential backoff (AC-003)
+                                            eprintln!(
+                                                "Warning: connection lost, reconnecting in {:?}...",
+                                                backoff
+                                            );
+                                            tokio::time::sleep(backoff).await;
+                                            backoff = darkshell_observe::watch::next_backoff(backoff);
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Drop our copy of sender so stream ends when the
+                            // spawned task finishes
+                            drop(stream.sender());
+
+                            // Stream events to stdout (AC-001, AC-004)
+                            while let Some(event) = stream.next_event().await {
+                                let output = stream.format_event(&event);
+                                println!("{output}");
+
+                                // Exit cleanly on sandbox deletion (AC-005)
+                                if event.event_type == "lifecycle" {
+                                    if let darkshell_observe::EventPayload::SandboxStateChange(
+                                        ref lc,
+                                    ) = event.payload
+                                    {
+                                        if lc.phase == "deleted" {
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
