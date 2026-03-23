@@ -17,6 +17,7 @@ use openshell_core::forward::{
 use openshell_core::proto::{CreateSshSessionRequest, GetSandboxRequest};
 use owo_colors::OwoColorize;
 use rustls::pki_types::ServerName;
+use sha2::Digest as _;
 use std::fs;
 use std::io::IsTerminal;
 #[cfg(unix)]
@@ -1878,6 +1879,530 @@ async fn read_connect_status<R: AsyncRead + Unpin>(stream: &mut R) -> Result<u16
 trait ProxyStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> ProxyStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+// ---------------------------------------------------------------------------
+// DS-006: Upload --dry-run preview
+// ---------------------------------------------------------------------------
+
+/// A single file entry with its relative path and content hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    /// Relative path within the directory (e.g., "src/main.rs").
+    pub path: String,
+    /// Hex-encoded SHA256 hash of the file content.
+    pub hash: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// The result of comparing local and remote file sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadDiff {
+    /// Files that exist locally but not in the sandbox.
+    pub added: Vec<FileEntry>,
+    /// Files that exist in both but have different content hashes.
+    pub modified: Vec<ModifiedEntry>,
+    /// Files that exist in the sandbox but not locally.
+    pub deleted: Vec<FileEntry>,
+    /// Files identical in both locations.
+    pub unchanged: Vec<FileEntry>,
+}
+
+/// A file that exists in both local and remote but differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModifiedEntry {
+    /// Relative path of the file.
+    pub path: String,
+    /// Local file size in bytes.
+    pub local_size: u64,
+    /// Remote file size in bytes.
+    pub remote_size: u64,
+}
+
+/// Compute the diff between local and remote file sets (pure function).
+///
+/// Every file appears in exactly one category: added, modified, deleted,
+/// or unchanged. This function performs no I/O.
+pub fn compute_upload_diff(
+    local_files: &[FileEntry],
+    remote_files: &[FileEntry],
+) -> UploadDiff {
+    let remote_map: HashMap<&str, &FileEntry> = remote_files
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
+    let local_map: HashMap<&str, &FileEntry> = local_files
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
+
+    let mut added = Vec::new();
+    let mut modified = Vec::new();
+    let mut unchanged = Vec::new();
+
+    for local in local_files {
+        match remote_map.get(local.path.as_str()) {
+            None => added.push(local.clone()),
+            Some(remote) => {
+                if local.hash == remote.hash {
+                    unchanged.push(local.clone());
+                } else {
+                    modified.push(ModifiedEntry {
+                        path: local.path.clone(),
+                        local_size: local.size,
+                        remote_size: remote.size,
+                    });
+                }
+            }
+        }
+    }
+
+    let deleted: Vec<FileEntry> = remote_files
+        .iter()
+        .filter(|r| !local_map.contains_key(r.path.as_str()))
+        .cloned()
+        .collect();
+
+    UploadDiff {
+        added,
+        modified,
+        deleted,
+        unchanged,
+    }
+}
+
+/// Format the dry-run diff as a human-readable string.
+///
+/// Pure function — no I/O. Returns the formatted output.
+pub fn format_dry_run_output(diff: &UploadDiff) -> String {
+    let mut out = String::new();
+
+    if !diff.added.is_empty() {
+        out.push_str("Files to add:\n");
+        for f in &diff.added {
+            out.push_str(&format!("  + {} ({} bytes)\n", f.path, f.size));
+        }
+    }
+
+    if !diff.modified.is_empty() {
+        out.push_str("Files to modify:\n");
+        for f in &diff.modified {
+            out.push_str(&format!(
+                "  ~ {} (local: {} bytes, remote: {} bytes)\n",
+                f.path, f.local_size, f.remote_size
+            ));
+        }
+    }
+
+    if !diff.deleted.is_empty() {
+        out.push_str("Files to delete:\n");
+        for f in &diff.deleted {
+            out.push_str(&format!("  - {} ({} bytes)\n", f.path, f.size));
+        }
+    }
+
+    out.push_str(&format_dry_run_summary(diff));
+    out
+}
+
+/// Format the summary line for a dry-run diff.
+///
+/// Returns a string like: "3 file(s) to add, 2 file(s) to modify, 1 file(s) to delete"
+pub fn format_dry_run_summary(diff: &UploadDiff) -> String {
+    format!(
+        "{} file(s) to add, {} file(s) to modify, {} file(s) to delete, {} unchanged",
+        diff.added.len(),
+        diff.modified.len(),
+        diff.deleted.len(),
+        diff.unchanged.len(),
+    )
+}
+
+/// Format the dry-run diff as a JSON string for programmatic use.
+///
+/// Pure function — no I/O. Returns a JSON object with `added`, `modified`,
+/// `deleted` arrays and a `summary` object.
+pub fn format_dry_run_json(diff: &UploadDiff) -> Result<String> {
+    let added: Vec<serde_json::Value> = diff
+        .added
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "path": f.path,
+                "size": f.size,
+            })
+        })
+        .collect();
+
+    let modified: Vec<serde_json::Value> = diff
+        .modified
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "path": f.path,
+                "local_size": f.local_size,
+                "remote_size": f.remote_size,
+            })
+        })
+        .collect();
+
+    let deleted: Vec<serde_json::Value> = diff
+        .deleted
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "path": f.path,
+                "size": f.size,
+            })
+        })
+        .collect();
+
+    let json = serde_json::json!({
+        "added": added,
+        "modified": modified,
+        "deleted": deleted,
+        "summary": {
+            "added": diff.added.len(),
+            "modified": diff.modified.len(),
+            "deleted": diff.deleted.len(),
+            "unchanged": diff.unchanged.len(),
+        }
+    });
+
+    serde_json::to_string_pretty(&json)
+        .map_err(|e| miette::miette!("failed to serialize dry-run output as JSON: {e}"))
+}
+
+/// Collect file hashes from the remote sandbox using exec.
+///
+/// Runs `find <dest> -type f -exec sha256sum {} +` in the sandbox and parses
+/// the output into a list of [`FileEntry`] values.
+pub async fn collect_remote_hashes(
+    server: &str,
+    name: &str,
+    sandbox_dest: &str,
+    tls: &TlsOptions,
+) -> Result<Vec<FileEntry>> {
+    let cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "if [ -d {} ]; then find {} -type f -exec sha256sum {{}} +; fi",
+            shell_escape(sandbox_dest),
+            shell_escape(sandbox_dest)
+        ),
+    ];
+
+    let result = sandbox_exec_captured(server, name, &cmd, 30, tls).await?;
+
+    if result.exit_code != 0 {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(miette::miette!(
+            "Cannot preview upload: failed to list sandbox files in '{name}'.\n\
+             stderr: {stderr}\n\
+             Is the sandbox running? Start it with: darkshell sandbox start {name}"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let dest_prefix = format!(
+        "{}/",
+        sandbox_dest.trim_end_matches('/')
+    );
+
+    let entries: Vec<FileEntry> = stdout
+        .lines()
+        .filter_map(|line| {
+            // sha256sum output: "<hash>  <path>"
+            let (hash, path) = line.split_once("  ")?;
+            let relative = path.strip_prefix(&dest_prefix).unwrap_or(path);
+            if relative.is_empty() {
+                return None;
+            }
+            Some(FileEntry {
+                path: relative.to_string(),
+                hash: hash.to_string(),
+                // Size not available from sha256sum; use 0 as placeholder for remote.
+                size: 0,
+            })
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+/// Collect file hashes from a local directory.
+///
+/// Walks the directory recursively, computing SHA256 for each file.
+/// Follows symlinks to match rsync `-L` behavior.
+pub fn collect_local_hashes(local_path: &Path) -> Result<Vec<FileEntry>> {
+    use std::io::Read;
+
+    let mut entries = Vec::new();
+    let base = local_path
+        .canonicalize()
+        .map_err(|e| miette::miette!("failed to canonicalize local path '{}': {e}", local_path.display()))?;
+
+    fn walk_dir(base: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> Result<()> {
+        let read_dir = std::fs::read_dir(current)
+            .map_err(|e| miette::miette!("failed to read directory '{}': {e}", current.display()))?;
+
+        for entry in read_dir {
+            let entry = entry
+                .map_err(|e| miette::miette!("failed to read directory entry: {e}"))?;
+            let path = entry.path();
+            // Follow symlinks by using metadata() (not symlink_metadata).
+            let meta = std::fs::metadata(&path)
+                .map_err(|e| miette::miette!("failed to stat '{}': {e}", path.display()))?;
+
+            if meta.is_dir() {
+                walk_dir(base, &path, entries)?;
+            } else if meta.is_file() {
+                let relative = path
+                    .strip_prefix(base)
+                    .map_err(|e| miette::miette!("path prefix error: {e}"))?
+                    .to_string_lossy()
+                    .to_string();
+
+                let mut file = std::fs::File::open(&path)
+                    .map_err(|e| miette::miette!("failed to open '{}': {e}", path.display()))?;
+                let mut hasher = sha2::Sha256::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = file
+                        .read(&mut buf)
+                        .map_err(|e| miette::miette!("failed to read '{}': {e}", path.display()))?;
+                    if n == 0 {
+                        break;
+                    }
+                    sha2::Digest::update(&mut hasher, &buf[..n]);
+                }
+                let hash = format!("{:x}", sha2::Digest::finalize(hasher));
+
+                entries.push(FileEntry {
+                    path: relative,
+                    hash,
+                    size: meta.len(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    if base.is_file() {
+        let meta = std::fs::metadata(&base)
+            .map_err(|e| miette::miette!("failed to stat '{}': {e}", base.display()))?;
+        let mut file = std::fs::File::open(&base)
+            .map_err(|e| miette::miette!("failed to open '{}': {e}", base.display()))?;
+        let mut hasher = sha2::Sha256::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| miette::miette!("failed to read '{}': {e}", base.display()))?;
+            if n == 0 {
+                break;
+            }
+            sha2::Digest::update(&mut hasher, &buf[..n]);
+        }
+        let hash = format!("{:x}", sha2::Digest::finalize(hasher));
+        let filename = base
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        entries.push(FileEntry {
+            path: filename,
+            hash,
+            size: meta.len(),
+        });
+    } else {
+        walk_dir(&base, &base, &mut entries)?;
+    }
+
+    // Sort for deterministic output.
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// Execute a dry-run upload preview showing what would change.
+///
+/// For tar mode, collects local hashes and remote hashes via exec, then
+/// computes and displays the diff. For rsync mode, delegates to
+/// `rsync --dry-run --itemize-changes`.
+pub async fn sandbox_upload_dry_run(
+    server: &str,
+    name: &str,
+    local_path: &Path,
+    sandbox_dest: &str,
+    tls: &TlsOptions,
+    use_rsync: bool,
+    follow_symlinks: bool,
+    json_output: bool,
+) -> Result<()> {
+    if use_rsync {
+        // Rsync mode: use rsync's native --dry-run.
+        let rsync_available = check_rsync_available(server, name, tls).await?;
+        if rsync_available {
+            let session = ssh_session_config(server, name, tls).await?;
+            let options = RsyncUploadOptions {
+                follow_symlinks,
+                progress: false,
+            };
+            let args = build_rsync_dry_run_args(
+                &session.proxy_command,
+                local_path,
+                sandbox_dest,
+                &options,
+            );
+
+            let mut cmd = TokioCommand::new("rsync");
+            cmd.args(&args);
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            let child = cmd.spawn().into_diagnostic().wrap_err(
+                "failed to spawn rsync for dry-run. Is rsync installed on the host?"
+            )?;
+
+            let output = child.wait_with_output().await.into_diagnostic()?;
+
+            // rsync exit code 24 (vanished files) is acceptable.
+            if !output.status.success() && output.status.code() != Some(24) {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(miette::miette!(
+                    "rsync dry-run failed (exit code {}).\nstderr: {stderr}",
+                    output.status.code().unwrap_or(1)
+                ));
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if json_output {
+                // Parse rsync itemize output into our diff format.
+                let diff = parse_rsync_itemize_output(&stdout);
+                let json_str = format_dry_run_json(&diff)?;
+                println!("{json_str}");
+            } else {
+                // Print rsync's native output.
+                print!("{stdout}");
+                let diff = parse_rsync_itemize_output(&stdout);
+                eprintln!("{}", format_dry_run_summary(&diff));
+            }
+            return Ok(());
+        }
+        // Fall through to tar-based dry-run if rsync unavailable.
+        eprintln!(
+            "{} rsync not available in sandbox '{}'. Using hash-based dry-run.",
+            "⚠".yellow().bold(),
+            name
+        );
+    }
+
+    // Tar mode: collect local and remote hashes, then diff.
+    eprintln!("Collecting local file hashes...");
+    let local_files = collect_local_hashes(local_path)?;
+
+    eprintln!("Collecting sandbox file hashes...");
+    let remote_files = collect_remote_hashes(server, name, sandbox_dest, tls).await?;
+
+    let diff = compute_upload_diff(&local_files, &remote_files);
+
+    if json_output {
+        let json_str = format_dry_run_json(&diff)?;
+        println!("{json_str}");
+    } else {
+        let output = format_dry_run_output(&diff);
+        print!("{output}");
+    }
+
+    Ok(())
+}
+
+/// Parse rsync `--itemize-changes` output into an [`UploadDiff`].
+///
+/// Each line starts with a change indicator like `>f+++++++++` (new file),
+/// `>f.st......` (modified), or `*deleting` (deleted).
+pub fn parse_rsync_itemize_output(output: &str) -> UploadDiff {
+    let mut added = Vec::new();
+    let mut modified = Vec::new();
+    let mut deleted = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with("*deleting") {
+            // Format: "*deleting   path/to/file"
+            let path = line
+                .strip_prefix("*deleting")
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() && !path.ends_with('/') {
+                deleted.push(FileEntry {
+                    path,
+                    hash: String::new(),
+                    size: 0,
+                });
+            }
+        } else if line.len() > 12 {
+            // Itemize format: "YXcstpoguax path" (11 chars + space + path)
+            let (flags, path) = if let Some(idx) = line.find(' ') {
+                let (f, p) = line.split_at(idx);
+                (f, p.trim())
+            } else {
+                continue;
+            };
+
+            if path.is_empty() || path.ends_with('/') {
+                continue;
+            }
+
+            // 'f' in position 1 means regular file.
+            if flags.len() >= 2 && flags.as_bytes().get(1) == Some(&b'f') {
+                // Check if it's a new file (contains +++)
+                if flags.contains("+++") {
+                    added.push(FileEntry {
+                        path: path.to_string(),
+                        hash: String::new(),
+                        size: 0,
+                    });
+                } else {
+                    modified.push(ModifiedEntry {
+                        path: path.to_string(),
+                        local_size: 0,
+                        remote_size: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    UploadDiff {
+        added,
+        modified,
+        deleted,
+        unchanged: Vec::new(), // rsync --itemize-changes doesn't report unchanged files
+    }
+}
+
+/// Build rsync dry-run arguments that produce itemized change output.
+///
+/// Returns the full list of arguments to pass to the `rsync` binary with
+/// `--dry-run` and `--itemize-changes` added.
+pub(crate) fn build_rsync_dry_run_args(
+    proxy_command: &str,
+    local_path: &Path,
+    sandbox_dest: &str,
+    options: &RsyncUploadOptions,
+) -> Vec<String> {
+    let mut args = build_rsync_args(proxy_command, local_path, sandbox_dest, options);
+    // Insert --dry-run and --itemize-changes after the core flags.
+    args.insert(1, "--dry-run".to_string());
+    args.insert(2, "--itemize-changes".to_string());
+    args
+}
 
 #[cfg(test)]
 mod tests {

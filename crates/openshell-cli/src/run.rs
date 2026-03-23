@@ -50,7 +50,7 @@ pub use crate::ssh::{
     sandbox_connect, sandbox_connect_editor, sandbox_exec, sandbox_exec_captured,
     sandbox_forward, sandbox_ssh_proxy, sandbox_ssh_proxy_by_name, sandbox_sync_down,
     sandbox_sync_down_filtered, sandbox_sync_up, sandbox_sync_up_files,
-    sandbox_sync_up_rsync_or_tar, RsyncUploadOptions,
+    sandbox_sync_up_rsync_or_tar, sandbox_upload_dry_run, RsyncUploadOptions,
 };
 pub use openshell_core::forward::{
     find_forward_by_port, list_forwards, stop_forward, stop_forwards_for_sandbox,
@@ -2831,6 +2831,10 @@ pub async fn sandbox_delete(
                 );
             }
         }
+
+        // Clean up MCP bridge daemons and registration files (FR-038).
+        // Partial failures are logged but do not block sandbox deletion.
+        crate::mcp::cleanup_mcp_for_sandbox(name);
 
         let response = client
             .delete_sandbox(DeleteSandboxRequest { name: name.clone() })
