@@ -166,6 +166,7 @@ const HELP_TEMPLATE: &str = "\
   policy:      Manage sandbox policy
   settings:    Manage sandbox and global settings
   provider:    Manage provider configuration
+  mcp:         Manage MCP server connections to sandboxes
 
 \x1b[1mGATEWAY COMMANDS\x1b[0m
   gateway:     Manage the gateway lifecycle
@@ -276,6 +277,14 @@ const PROVIDER_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
   $ darkshell provider list
   $ darkshell provider get openai
   $ darkshell provider delete openai
+";
+
+const MCP_EXAMPLES: &str = "\x1b[1mEXAMPLES\x1b[0m
+  $ darkshell mcp add my-sandbox --name perplexity --command 'npx -y @anthropic/perplexity-mcp'
+  $ darkshell mcp add my-sandbox --name tavily --command 'npx -y @tavily/mcp' --env TAVILY_API_KEY
+  $ darkshell mcp list my-sandbox
+  $ darkshell mcp list my-sandbox --json
+  $ darkshell mcp remove my-sandbox --name perplexity
 ";
 
 const GATEWAY_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
@@ -434,6 +443,13 @@ enum Commands {
     Provider {
         #[command(subcommand)]
         command: Option<ProviderCommands>,
+    },
+
+    /// Manage MCP server connections to sandboxes.
+    #[command(after_help = MCP_EXAMPLES, help_template = SUBCOMMAND_HELP_TEMPLATE)]
+    Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommands>,
     },
 
     // ===================================================================
@@ -1079,6 +1095,19 @@ enum SandboxCommands {
         #[arg(long, value_hint = ValueHint::AnyPath)]
         from: Option<String>,
 
+        /// Create a sandbox from a blueprint YAML file.
+        ///
+        /// When provided, all sandbox configuration is read from the blueprint
+        /// file. Other flags (--name, --upload, --provider, --policy, --forward)
+        /// are ignored in favor of the blueprint contents.
+        ///
+        /// See `darkshell blueprint --help` for the blueprint format.
+        #[arg(long, value_hint = ValueHint::FilePath, conflicts_with_all = [
+            "from", "upload", "providers", "policy", "forward", "editor",
+            "gpu", "remote", "ssh_key", "keep", "no_keep"
+        ])]
+        from_blueprint: Option<String>,
+
         /// Upload local files into the sandbox before running.
         ///
         /// Format: `<LOCAL_PATH>[:<SANDBOX_PATH>]`.
@@ -1267,6 +1296,17 @@ enum SandboxCommands {
         /// symlinks (`-L`) and uploads the target file content.
         #[arg(long, requires = "rsync")]
         no_follow_symlinks: bool,
+
+        /// Preview what would be uploaded without transferring any files.
+        ///
+        /// Shows files that would be added, modified, or deleted in the
+        /// sandbox. No bytes are transferred.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output dry-run results as JSON (requires `--dry-run`).
+        #[arg(long, requires = "dry_run")]
+        json: bool,
     },
 
     /// Download files from a sandbox.
@@ -1598,6 +1638,53 @@ enum ForwardCommands {
     List,
 }
 
+#[derive(Subcommand, Debug)]
+enum McpCommands {
+    /// Register an MCP server and start the bridge for a sandbox.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Add {
+        /// Sandbox to connect the MCP server to.
+        #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        sandbox: String,
+
+        /// MCP server name (e.g., "perplexity", "tavily").
+        #[arg(long)]
+        name: String,
+
+        /// Command to start the MCP server (e.g., "npx -y @anthropic/perplexity-mcp").
+        #[arg(long)]
+        command: String,
+
+        /// Environment variable keys to pass through (e.g., --env TAVILY_API_KEY).
+        #[arg(long = "env")]
+        env_keys: Vec<String>,
+    },
+
+    /// List MCP servers connected to a sandbox.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    List {
+        /// Sandbox to list MCP servers for.
+        #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        sandbox: String,
+
+        /// Output in JSON format for programmatic use.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove an MCP server from a sandbox.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Remove {
+        /// Sandbox the MCP server is connected to.
+        #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        sandbox: String,
+
+        /// MCP server name to remove.
+        #[arg(long)]
+        name: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the rustls crypto provider before completion runs — completers may
@@ -1627,6 +1714,44 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
+        // -----------------------------------------------------------
+        // MCP commands (no gateway context required)
+        // -----------------------------------------------------------
+        Some(Commands::Mcp {
+            command: Some(command),
+        }) => match command {
+            McpCommands::Add {
+                sandbox,
+                name,
+                command,
+                env_keys,
+            } => {
+                let cmd_parts: Vec<String> = command
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect();
+                openshell_cli::mcp::mcp_add(&sandbox, &name, &cmd_parts, &env_keys)?;
+            }
+            McpCommands::List { sandbox, json } => {
+                let format = if json {
+                    openshell_cli::mcp::ListFormat::Json
+                } else {
+                    openshell_cli::mcp::ListFormat::Human
+                };
+                openshell_cli::mcp::mcp_list(&sandbox, format)?;
+            }
+            McpCommands::Remove { sandbox, name } => {
+                openshell_cli::mcp::mcp_remove(&sandbox, &name)?;
+            }
+        },
+        Some(Commands::Mcp { command: None }) => {
+            Cli::command()
+                .find_subcommand_mut("mcp")
+                .expect("mcp subcommand must exist")
+                .print_help()
+                .expect("Failed to print help");
+        }
+
         // -----------------------------------------------------------
         // Gateway commands (was `cluster` / `cluster admin`)
         // -----------------------------------------------------------
@@ -2151,6 +2276,7 @@ async fn main() -> Result<()> {
                 SandboxCommands::Create {
                     name,
                     from,
+                    from_blueprint,
                     upload,
                     no_git_ignore,
                     keep,
@@ -2170,6 +2296,26 @@ async fn main() -> Result<()> {
                     no_auto_providers,
                     command,
                 } => {
+                    // --from-blueprint: delegate to blueprint orchestrator.
+                    if let Some(ref blueprint_path) = from_blueprint {
+                        let path = std::path::Path::new(blueprint_path);
+                        let _blueprint =
+                            openshell_cli::blueprint::read_blueprint(path)?;
+                        eprintln!(
+                            "{} Blueprint loaded: {}",
+                            "\u{2713}".green().bold(),
+                            blueprint_path,
+                        );
+                        eprintln!(
+                            "{} Blueprint-based sandbox creation is not yet fully \
+                             wired to the gateway. The blueprint was validated \
+                             successfully. Use `darkshell sandbox create --from <image>` \
+                             with individual flags until gateway integration is complete.",
+                            "!".yellow(),
+                        );
+                        return Ok(());
+                    }
+
                     // Resolve --tty / --no-tty into an Option<bool> override.
                     let tty_override = if no_tty {
                         Some(false)
@@ -2291,6 +2437,8 @@ async fn main() -> Result<()> {
                     no_git_ignore,
                     rsync,
                     no_follow_symlinks,
+                    dry_run,
+                    json,
                 } => {
                     let ctx = resolve_gateway(&cli.gateway, &cli.gateway_endpoint)?;
                     let mut tls = tls.with_gateway_name(&ctx.name);
@@ -2302,6 +2450,23 @@ async fn main() -> Result<()> {
                             "local path does not exist: {}",
                             local.display()
                         ));
+                    }
+
+                    // DS-006: dry-run preview — show what would be uploaded
+                    // without transferring any files.
+                    if dry_run {
+                        run::sandbox_upload_dry_run(
+                            &ctx.endpoint,
+                            &name,
+                            local,
+                            sandbox_dest,
+                            &tls,
+                            rsync,
+                            !no_follow_symlinks,
+                            json,
+                        )
+                        .await?;
+                        return Ok(());
                     }
 
                     // DS-002: rsync delta upload path.

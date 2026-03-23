@@ -28,9 +28,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod orchestrator;
 mod schema;
 
 pub use schema::{
-    Blueprint, BlueprintMetadata, BlueprintSpec, McpServerEntry, McpTransport, ResourceSpec,
-    ValidationError, ValidationResult, ValidationWarning, parse_blueprint, validate,
+    Blueprint, BlueprintMetadata, BlueprintSpec, McpServerEntry, McpTransport, ParseError,
+    ResourceSpec, ValidationError, ValidationResult, ValidationWarning, parse_blueprint, validate,
 };
