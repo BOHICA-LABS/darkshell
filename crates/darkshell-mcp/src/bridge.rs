@@ -32,6 +32,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, oneshot};
+use tokio::time::timeout;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -53,9 +54,6 @@ const BACKOFF_DURATIONS: [Duration; 3] = [
 
 /// Timeout for the MCP server initialize handshake.
 pub const INITIALIZE_TIMEOUT_SECS: u64 = 60;
-
-/// Slower retry interval after max fast retries exhausted (for long-running mode).
-pub const SLOW_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
 // Bridge configuration
@@ -100,10 +98,9 @@ impl BridgeConfig {
 }
 
 fn dirs_default_config() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from(".config"),
-        |h| PathBuf::from(h).join(".config"),
-    )
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".config"))
+        .expect("HOME environment variable must be set")
 }
 
 // ---------------------------------------------------------------------------
@@ -221,11 +218,22 @@ struct McpProcess {
 }
 
 /// The MCP bridge managing one MCP server subprocess and HTTP endpoint.
+///
+/// # Known limitation: single mutex serializes all requests (MCP-F005)
+///
+/// The `process` field uses a single `Mutex` that serializes all concurrent
+/// HTTP requests through the MCP server's stdin/stdout. This is intentional:
+/// JSON-RPC over stdio is inherently serial — the MCP server reads one
+/// request from stdin and writes one response to stdout. Pipelining without
+/// request IDs would cause response mismatches. If higher concurrency is
+/// needed, run multiple bridge instances (one per MCP server process).
 pub struct McpBridge {
     config: BridgeConfig,
     port: u16,
-    /// Pre-bound listener to eliminate TOCTOU race between port discovery and serve().
+    /// Pre-bound listener to eliminate TOCTOU race between port discovery and `serve()`.
     listener: Mutex<Option<TcpListener>>,
+    /// Single mutex guards subprocess stdin/stdout access. JSON-RPC over stdio
+    /// is inherently serial, so concurrent requests must be serialized here.
     process: Arc<Mutex<Option<McpProcess>>>,
     env_vars: HashMap<String, String>,
     /// Tool-level policy holder for hot-reloadable policy enforcement (ADR-010).
@@ -240,20 +248,34 @@ impl McpBridge {
     /// 1. Resolves credentials from the provider
     /// 2. Selects an available port
     /// 3. Checks for existing registration (stale PID cleanup)
-    /// 4. Spawns the MCP server subprocess
-    /// 5. Writes the registration file
-    pub fn start(
+    /// 4. Spawns the MCP server subprocess (stored in Arc<Mutex> immediately)
+    /// 5. Writes the registration file (cleans up child on failure)
+    ///
+    /// File I/O is offloaded to `spawn_blocking` to avoid blocking the async
+    /// runtime (MCP-F003). The child process is stored in the Arc<Mutex>
+    /// immediately after spawn so it can be cleaned up if `write_registration`
+    /// fails (MCP-F004).
+    pub async fn start(
         config: BridgeConfig,
         credential_provider: &dyn CredentialProvider,
         policy: PolicyHolder,
         logger: Option<Arc<ToolCallLogger>>,
     ) -> Result<Self> {
-        // Check for existing registration
-        if let Some(existing) =
-            read_registration(&config.config_dir, &config.sandbox, &config.server_name)?
-        {
-            // Check if the PID is still alive
-            if pid_is_alive(existing.bridge_pid) {
+        // Check for existing registration (offload blocking I/O)
+        let cfg_dir = config.config_dir.clone();
+        let sandbox = config.sandbox.clone();
+        let server_name = config.server_name.clone();
+        let existing = tokio::task::spawn_blocking(move || {
+            read_registration(&cfg_dir, &sandbox, &server_name)
+        })
+        .await
+        .map_err(|e| BridgeError::RegistrationIo {
+            reason: format!("spawn_blocking join error: {e}"),
+        })??;
+
+        if let Some(existing) = existing {
+            // Check PID + start time to detect PID reuse
+            if pid_is_alive_with_start_time(existing.bridge_pid, existing.process_start_time) {
                 return Err(BridgeError::AlreadyRunning {
                     sandbox: config.sandbox.clone(),
                     server: config.server_name.clone(),
@@ -267,7 +289,16 @@ impl McpBridge {
                 stale_pid = existing.bridge_pid,
                 "cleaning up stale registration"
             );
-            remove_registration(&config.config_dir, &config.sandbox, &config.server_name)?;
+            let cfg_dir = config.config_dir.clone();
+            let sandbox = config.sandbox.clone();
+            let server_name = config.server_name.clone();
+            tokio::task::spawn_blocking(move || {
+                remove_registration(&cfg_dir, &sandbox, &server_name)
+            })
+            .await
+            .map_err(|e| BridgeError::RegistrationIo {
+                reason: format!("spawn_blocking join error: {e}"),
+            })??;
         }
 
         // Resolve credentials
@@ -280,10 +311,11 @@ impl McpBridge {
         })?.port();
         tracing::info!(port, "selected available port for MCP bridge");
 
-        // Spawn subprocess
+        // Spawn subprocess — store in Arc<Mutex> immediately (MCP-F004)
         let process = spawn_mcp_process(&config.command, &env_vars)?;
+        let process_arc = Arc::new(Mutex::new(Some(process)));
 
-        // Write registration
+        // Write registration — if this fails, kill the child process
         let registration = BridgeRegistration {
             sandbox: config.sandbox.clone(),
             server_name: config.server_name.clone(),
@@ -292,14 +324,37 @@ impl McpBridge {
             bridge_pid: std::process::id(),
             forwarded_port: port,
             status: BridgeStatus::Running,
+            process_start_time: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            ),
         };
-        write_registration(&config.config_dir, &registration)?;
+        let reg_clone = registration.clone();
+        let cfg_dir = config.config_dir.clone();
+        let write_result = tokio::task::spawn_blocking(move || {
+            write_registration(&cfg_dir, &reg_clone)
+        })
+        .await
+        .map_err(|e| BridgeError::RegistrationIo {
+            reason: format!("spawn_blocking join error: {e}"),
+        })?;
+
+        if let Err(e) = write_result {
+            // MCP-F004: Clean up the child process on registration failure
+            let mut guard = process_arc.lock().await;
+            if let Some(mut proc) = guard.take() {
+                let _ = proc.child.kill().await;
+            }
+            return Err(e);
+        }
 
         Ok(Self {
             config,
             port,
             listener: Mutex::new(Some(listener)),
-            process: Arc::new(Mutex::new(Some(process))),
+            process: process_arc,
             env_vars,
             policy,
             logger,
@@ -401,15 +456,22 @@ impl McpBridge {
                 reason: format!("failed to flush MCP server stdin: {e}"),
             })?;
 
-        // Read response line from stdout
+        // Read response line from stdout with timeout (MCP-F006)
         let mut line = String::new();
-        process
-            .stdout_reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| BridgeError::SubprocessIo {
-                reason: format!("failed to read from MCP server stdout: {e}"),
-            })?;
+        let read_timeout = Duration::from_secs(INITIALIZE_TIMEOUT_SECS);
+        match timeout(read_timeout, process.stdout_reader.read_line(&mut line)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                return Err(BridgeError::SubprocessIo {
+                    reason: format!("failed to read from MCP server stdout: {e}"),
+                });
+            }
+            Err(_) => {
+                return Err(BridgeError::InitializeTimeout {
+                    timeout_secs: INITIALIZE_TIMEOUT_SECS,
+                });
+            }
+        }
 
         if line.is_empty() {
             return Err(BridgeError::SubprocessIo {
@@ -445,6 +507,9 @@ impl McpBridge {
 
     /// Attempt to restart the MCP server subprocess with backoff.
     ///
+    /// Updates the registration file to reflect lifecycle transitions:
+    /// Starting -> Running (on success) or Failed (on exhaustion).
+    ///
     /// Returns `Ok(())` if restart succeeded, or `Err` if max retries
     /// exhausted.
     pub async fn restart_with_backoff(&self, crash_reason: &str) -> Result<()> {
@@ -457,6 +522,9 @@ impl McpBridge {
                     last_exit: last_exit.clone(),
                 }
             })?;
+
+            // Update registration to Starting status
+            self.update_registration_status(BridgeStatus::Starting).await;
 
             tracing::warn!(
                 sandbox = %self.config.sandbox,
@@ -474,6 +542,10 @@ impl McpBridge {
                 Ok(process) => {
                     let mut guard = self.process.lock().await;
                     *guard = Some(process);
+
+                    // Update registration to Running status
+                    self.update_registration_status(BridgeStatus::Running).await;
+
                     tracing::info!(
                         sandbox = %self.config.sandbox,
                         server = %self.config.server_name,
@@ -495,10 +567,57 @@ impl McpBridge {
             }
         }
 
+        // Update registration to Failed status
+        self.update_registration_status(BridgeStatus::Failed).await;
+
         Err(BridgeError::MaxRetriesExhausted {
             attempts: MAX_RESTART_ATTEMPTS,
             last_exit,
         })
+    }
+
+    /// Update the registration file with a new status.
+    ///
+    /// Best-effort: logs a warning if the update fails but does not propagate
+    /// the error, since registration updates are secondary to the restart itself.
+    async fn update_registration_status(&self, status: BridgeStatus) {
+        let registration = BridgeRegistration {
+            sandbox: self.config.sandbox.clone(),
+            server_name: self.config.server_name.clone(),
+            transport: Transport::StdioHttp,
+            command: self.config.command.clone(),
+            bridge_pid: std::process::id(),
+            forwarded_port: self.port,
+            status,
+            process_start_time: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            ),
+        };
+        let cfg_dir = self.config.config_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            write_registration(&cfg_dir, &registration)
+        }).await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    status = ?status,
+                    "failed to update registration status"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    status = ?status,
+                    "spawn_blocking failed for registration status update"
+                );
+            }
+        }
     }
 
     /// Run the HTTP server, blocking until shutdown is signaled.
@@ -569,6 +688,9 @@ impl McpBridge {
     }
 
     /// Shut down the bridge: kill subprocess, remove registration.
+    ///
+    /// Registration file removal is offloaded to `spawn_blocking` to avoid
+    /// blocking the async runtime (MCP-F003).
     pub async fn shutdown(&self) -> Result<()> {
         tracing::info!(
             sandbox = %self.config.sandbox,
@@ -582,16 +704,24 @@ impl McpBridge {
             let _ = process.child.kill().await;
         }
 
-        // Remove registration
-        remove_registration(
-            &self.config.config_dir,
-            &self.config.sandbox,
-            &self.config.server_name,
-        )?;
+        // Remove registration (offload blocking I/O)
+        let cfg_dir = self.config.config_dir.clone();
+        let sandbox = self.config.sandbox.clone();
+        let server_name = self.config.server_name.clone();
+        tokio::task::spawn_blocking(move || {
+            remove_registration(&cfg_dir, &sandbox, &server_name)
+        })
+        .await
+        .map_err(|e| BridgeError::RegistrationIo {
+            reason: format!("spawn_blocking join error: {e}"),
+        })??;
 
         Ok(())
     }
 }
+
+/// Maximum request body size (1 MB).
+const MAX_BODY_SIZE: u64 = 1_048_576;
 
 /// Handle an HTTP request to the bridge endpoint.
 async fn handle_http_request(
@@ -610,19 +740,16 @@ async fn handle_http_request(
     }
 
     // Reject oversized request bodies before reading (1 MB limit)
-    const MAX_BODY_SIZE: u64 = 1_048_576;
-    if let Some(content_length) = req.headers().get(hyper::header::CONTENT_LENGTH) {
-        if let Ok(len_str) = content_length.to_str() {
-            if let Ok(len) = len_str.parse::<u64>() {
-                if len > MAX_BODY_SIZE {
-                    return Ok(error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "request body too large",
-                        &format!("Content-Length {len} exceeds maximum of {MAX_BODY_SIZE} bytes"),
-                    ));
-                }
-            }
-        }
+    if let Some(content_length) = req.headers().get(hyper::header::CONTENT_LENGTH)
+        && let Ok(len_str) = content_length.to_str()
+        && let Ok(len) = len_str.parse::<u64>()
+        && len > MAX_BODY_SIZE
+    {
+        return Ok(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body too large",
+            &format!("Content-Length {len} exceeds maximum of {MAX_BODY_SIZE} bytes"),
+        ));
     }
 
     // Also check size_hint from the body itself (covers chunked transfers)
@@ -765,6 +892,50 @@ fn pid_is_alive(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Check whether a process is alive, accounting for PID reuse (MCP-F008).
+///
+/// If `expected_start_time` is `Some`, queries the process start time via `ps`
+/// and compares it. If the PID is alive but started at a different time, returns
+/// `false` (the original process died and the PID was reused).
+fn pid_is_alive_with_start_time(pid: u32, expected_start_time: Option<u64>) -> bool {
+    if !pid_is_alive(pid) {
+        return false;
+    }
+
+    // If no start time recorded, fall back to PID-only check
+    let Some(expected) = expected_start_time else {
+        return true;
+    };
+
+    // Query actual process start time via ps (macOS/Linux compatible)
+    let output = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            // ps returns a human-readable date; if we can't parse it,
+            // conservatively assume the PID is still the same process.
+            let lstart = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if lstart.is_empty() {
+                return true;
+            }
+            // Parse the lstart using chrono. Format: "Mon Jan  1 00:00:00 2024"
+            chrono::NaiveDateTime::parse_from_str(&lstart, "%a %b %e %H:%M:%S %Y")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&lstart, "%c"))
+                .map_or(true, |dt| {
+                    let actual = dt.and_utc().timestamp().cast_unsigned();
+                    // Allow 2-second tolerance for timing differences
+                    actual.abs_diff(expected) <= 2
+                })
+        }
+        _ => {
+            // ps failed — conservatively assume same process
+            true
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -832,9 +1003,14 @@ mod tests {
     }
 
     #[test]
-    fn error_response_has_json_body() {
+    fn error_response_has_json_body_and_content_type() {
         let resp = error_response(StatusCode::BAD_GATEWAY, "test error", "test detail");
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "error response should have application/json content-type"
+        );
     }
 
     // --- Backoff calculation tests (pure) ---
@@ -874,19 +1050,19 @@ mod tests {
 
     #[test]
     fn find_available_port_skips_occupied() {
-        // Bind a port to make it occupied
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let occupied_port = listener.local_addr().expect("addr").port();
+        // Bind a specific port in the test range to guarantee it's occupied
+        let occupied = TcpListener::bind(("127.0.0.1", 19200_u16)).expect("bind 19200");
+        let occupied_port = occupied.local_addr().expect("addr").port();
+        assert_eq!(occupied_port, 19200);
 
-        // If the occupied port happens to be in our test range, the function
-        // should skip it
-        if (19200..=19210).contains(&occupied_port) {
-            let found = find_available_port(19200, 19210).expect("should find port");
-            let port = found.local_addr().expect("addr").port();
-            assert_ne!(port, occupied_port);
-        }
-        // Keep listener alive for duration of test
-        drop(listener);
+        // find_available_port should skip 19200 and find 19201 or later
+        let found = find_available_port(19200, 19210).expect("should find port");
+        let port = found.local_addr().expect("addr").port();
+        assert_ne!(port, occupied_port, "should skip the occupied port");
+        assert!((19201..=19210).contains(&port));
+
+        // Keep occupied listener alive for duration of test
+        drop(occupied);
     }
 
     #[test]
@@ -1022,6 +1198,10 @@ mod tests {
             "only POST accepted",
         );
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
     }
 
     #[test]
@@ -1032,6 +1212,10 @@ mod tests {
             "parse error details",
         );
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
     }
 
     #[test]
@@ -1042,5 +1226,9 @@ mod tests {
             "restarting after crash",
         );
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
     }
 }

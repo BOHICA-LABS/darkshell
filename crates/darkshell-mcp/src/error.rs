@@ -7,7 +7,7 @@
 
 /// **SECURITY:** Display impl is for internal logging only. Credential values
 /// are never included in error messages.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
 #[non_exhaustive]
 pub enum BridgeError {
     /// MCP server command failed to start (binary not found, permission denied, etc.).

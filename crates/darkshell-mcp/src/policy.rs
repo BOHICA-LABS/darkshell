@@ -12,7 +12,7 @@
 //! - If no policy is configured (both lists empty), all tools are allowed.
 //! - `denied_tools` always takes precedence over `allowed_tools`.
 //! - When `allowed_tools` is non-empty, only listed tools are allowed (deny-by-default).
-//! - Empty `allowed_tools: []` means deny all.
+//! - Empty `allowed_tools: []` + empty `denied_tools: []` = allow all (no policy configured).
 //! - Empty `denied_tools: []` means deny nothing (equivalent to no policy).
 //! - Patterns support glob syntax (e.g., `read_*`, `*_file`).
 
@@ -339,10 +339,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_allowed_tools_denies_all() {
-        // EC-CUSTOM-004: Empty allowed_tools: [] means no tools allowed
+    fn test_both_empty_allows_all() {
+        // MCP-F008: Both lists empty = no policy configured = allow all.
+        // This matches the code behavior in evaluate_tool_access() rule 4.
         let policy = McpToolPolicy {
-            allowed_tools: vec![], // empty but present — this is default, means "no restriction"
+            allowed_tools: vec![],
             denied_tools: vec![],
         };
         // When both are empty, there's no restriction — allow all

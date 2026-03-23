@@ -11,6 +11,36 @@ use crate::error::{BridgeError, Result};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
+// Name validation (MCP-F007: path injection prevention)
+// ---------------------------------------------------------------------------
+
+/// Validate that a sandbox or server name contains only safe characters.
+///
+/// Allowed: lowercase letters, digits, and hyphens (`[a-z0-9-]`).
+/// Rejects: `/`, `..`, null bytes, uppercase, underscores, spaces, etc.
+///
+/// This prevents path injection attacks where a malicious name like
+/// `../../etc/passwd` could write registration files outside the registry dir.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(BridgeError::RegistrationIo {
+            reason: "name must not be empty".to_string(),
+        });
+    }
+
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return Err(BridgeError::RegistrationIo {
+            reason: format!(
+                "name '{name}' contains invalid characters. \
+                 Only lowercase letters, digits, and hyphens [a-z0-9-] are allowed"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Registration data types (pure-core — no I/O)
 // ---------------------------------------------------------------------------
 
@@ -61,6 +91,12 @@ pub struct BridgeRegistration {
     pub forwarded_port: u16,
     /// Current bridge status.
     pub status: BridgeStatus,
+    /// Process start time in seconds since UNIX epoch.
+    ///
+    /// Used alongside `bridge_pid` to detect PID reuse: if the PID is alive
+    /// but was started at a different time, the registration is stale.
+    #[serde(default)]
+    pub process_start_time: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +126,19 @@ fn dirs_or_home() -> Result<PathBuf> {
 }
 
 /// Registration file path for a sandbox+server pair.
-pub fn registration_path(config_dir: &Path, sandbox: &str, server: &str) -> PathBuf {
-    registry_dir(config_dir).join(format!("{sandbox}-{server}.yaml"))
+///
+/// Validates that sandbox and server names contain only `[a-z0-9-]` to
+/// prevent path injection (MCP-F007).
+pub fn registration_path(config_dir: &Path, sandbox: &str, server: &str) -> Result<PathBuf> {
+    validate_name(sandbox)?;
+    validate_name(server)?;
+    Ok(registry_dir(config_dir).join(format!("{sandbox}-{server}.yaml")))
 }
 
 /// Write a registration file for a bridge.
+///
+/// Uses atomic write (write to temp file, then rename) to prevent partial
+/// reads by concurrent processes.
 pub fn write_registration(
     config_dir: &Path,
     registration: &BridgeRegistration,
@@ -108,14 +152,25 @@ pub fn write_registration(
         config_dir,
         &registration.sandbox,
         &registration.server_name,
-    );
+    )?;
 
     let yaml = serde_yaml::to_string(registration).map_err(|e| BridgeError::RegistrationIo {
         reason: format!("failed to serialize registration: {e}"),
     })?;
 
-    std::fs::write(&path, yaml).map_err(|e| BridgeError::RegistrationIo {
-        reason: format!("failed to write {}: {e}", path.display()),
+    // Atomic write: write to temp file in same directory, then rename.
+    // rename() is atomic on POSIX when src and dst are on the same filesystem.
+    let tmp_path = path.with_extension("yaml.tmp");
+    std::fs::write(&tmp_path, &yaml).map_err(|e| BridgeError::RegistrationIo {
+        reason: format!("failed to write temp file {}: {e}", tmp_path.display()),
+    })?;
+
+    std::fs::rename(&tmp_path, &path).map_err(|e| {
+        // Clean up temp file on rename failure
+        let _ = std::fs::remove_file(&tmp_path);
+        BridgeError::RegistrationIo {
+            reason: format!("failed to rename {} -> {}: {e}", tmp_path.display(), path.display()),
+        }
     })?;
 
     tracing::info!(
@@ -136,7 +191,7 @@ pub fn read_registration(
     sandbox: &str,
     server: &str,
 ) -> Result<Option<BridgeRegistration>> {
-    let path = registration_path(config_dir, sandbox, server);
+    let path = registration_path(config_dir, sandbox, server)?;
 
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
@@ -162,7 +217,7 @@ pub fn remove_registration(
     sandbox: &str,
     server: &str,
 ) -> Result<bool> {
-    let path = registration_path(config_dir, sandbox, server);
+    let path = registration_path(config_dir, sandbox, server)?;
 
     match std::fs::remove_file(&path) {
         Ok(()) => {
@@ -195,7 +250,18 @@ pub fn list_registrations(config_dir: &Path) -> Result<Vec<BridgeRegistration>> 
     };
 
     let mut registrations = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "skipping unreadable directory entry in registry"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
             continue;
@@ -273,6 +339,12 @@ mod tests {
             bridge_pid: std::process::id(),
             forwarded_port: port,
             status: BridgeStatus::Running,
+            process_start_time: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time")
+                    .as_secs(),
+            ),
         }
     }
 
@@ -288,6 +360,7 @@ mod tests {
         assert_eq!(parsed.forwarded_port, 9100);
         assert_eq!(parsed.status, BridgeStatus::Running);
         assert_eq!(parsed.command, vec!["npx", "-y", "@test/perplexity"]);
+        assert!(parsed.process_start_time.is_some());
     }
 
     #[test]
@@ -402,11 +475,58 @@ mod tests {
     #[test]
     fn registration_path_format() {
         let config_dir = Path::new("/tmp/test-config");
-        let path = registration_path(config_dir, "dev", "perplexity");
+        let path = registration_path(config_dir, "dev", "perplexity").expect("valid names");
         assert_eq!(
             path,
             PathBuf::from("/tmp/test-config/darkshell/mcp/dev-perplexity.yaml")
         );
+    }
+
+    // --- MCP-F007: Name validation tests ---
+
+    #[test]
+    fn validate_name_accepts_lowercase_alphanumeric_and_hyphens() {
+        assert!(validate_name("dev").is_ok());
+        assert!(validate_name("my-sandbox-1").is_ok());
+        assert!(validate_name("abc123").is_ok());
+        assert!(validate_name("a").is_ok());
+    }
+
+    #[test]
+    fn validate_name_rejects_empty() {
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_path_traversal() {
+        assert!(validate_name("../etc/passwd").is_err());
+        assert!(validate_name("foo/bar").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_null_bytes() {
+        assert!(validate_name("foo\0bar").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_uppercase() {
+        assert!(validate_name("Dev").is_err());
+        assert!(validate_name("SANDBOX").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_special_characters() {
+        assert!(validate_name("my_sandbox").is_err());
+        assert!(validate_name("my sandbox").is_err());
+        assert!(validate_name("foo.bar").is_err());
+    }
+
+    #[test]
+    fn registration_path_rejects_invalid_names() {
+        let config_dir = Path::new("/tmp/test-config");
+        assert!(registration_path(config_dir, "../etc", "passwd").is_err());
+        assert!(registration_path(config_dir, "dev", "foo/bar").is_err());
+        assert!(registration_path(config_dir, "dev", "").is_err());
     }
 
     #[test]

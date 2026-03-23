@@ -48,5 +48,5 @@ pub use policy::{
 pub use logging::{McpToolCallLog, ToolCallLogger, format_tool_call_log};
 pub use registry::{
     BridgeRegistration, BridgeStatus, Transport, cleanup_sandbox, list_registrations,
-    read_registration, remove_registration, write_registration,
+    read_registration, remove_registration, validate_name, write_registration,
 };

@@ -16,6 +16,7 @@
 //!   channel with `try_send` to never block the bridge request path.
 //! - **Truncation safety:** All truncation is UTF-8 boundary-safe.
 
+use crate::policy::extract_tool_call_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,6 +69,10 @@ pub struct McpToolCallLog {
     /// JSON-RPC error message, if the call failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+
+    /// Original JSON-RPC request ID for protocol-level correlation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jsonrpc_id: Option<String>,
 }
 
 /// Truncate a string to at most `max_len` bytes, respecting UTF-8 boundaries.
@@ -97,20 +102,6 @@ pub fn truncate_utf8_safe(s: &str, max_len: usize) -> String {
     let mut result = s[..end].to_owned();
     result.push_str("...");
     result
-}
-
-/// Extract the tool name from a JSON-RPC `tools/call` request.
-///
-/// Returns `None` if the request is not a `tools/call` or the tool name
-/// cannot be extracted.
-pub fn extract_tool_name(jsonrpc: &serde_json::Value) -> Option<&str> {
-    if jsonrpc.get("method")?.as_str()? != "tools/call" {
-        return None;
-    }
-    jsonrpc
-        .get("params")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
 }
 
 /// Extract the JSON-RPC method from a request.
@@ -196,13 +187,19 @@ pub fn build_tool_call_log(
     duration_ms: u64,
     max_truncate_len: usize,
 ) -> McpToolCallLog {
-    let tool_name = extract_tool_name(request)
+    let tool_name = extract_tool_call_name(request)
         .unwrap_or("unknown")
         .to_owned();
     let arguments = extract_arguments(request, max_truncate_len);
     let (response_summary, success, error_code, error_message) =
         extract_response_summary(response, max_truncate_len);
-    let request_id = extract_request_id(request);
+    let jsonrpc_id_raw = extract_request_id(request);
+    let jsonrpc_id = if jsonrpc_id_raw.is_empty() {
+        None
+    } else {
+        Some(jsonrpc_id_raw)
+    };
+    let request_id = ToolCallLogger::generate_request_id();
 
     McpToolCallLog {
         request_id,
@@ -216,6 +213,7 @@ pub fn build_tool_call_log(
         sandbox: sandbox.to_owned(),
         error_code,
         error_message,
+        jsonrpc_id,
     }
 }
 
@@ -369,6 +367,9 @@ mod tests {
 
         assert_eq!(log.server_name, "perplexity");
         assert_eq!(log.tool_name, "read_file");
+        // request_id is a unique trace ID (UUID v7), not the JSON-RPC id
+        assert!(!log.request_id.is_empty());
+        assert_eq!(log.jsonrpc_id.as_deref(), Some("1"));
     }
 
     #[test]
@@ -596,34 +597,34 @@ mod tests {
     // --- Field extraction tests ---
 
     #[test]
-    fn extract_tool_name_from_tools_call() {
+    fn extract_tool_call_name_from_tools_call() {
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/call",
             "params": {"name": "read_file", "arguments": {}},
             "id": 1
         });
-        assert_eq!(extract_tool_name(&req), Some("read_file"));
+        assert_eq!(extract_tool_call_name(&req), Some("read_file"));
     }
 
     #[test]
-    fn extract_tool_name_returns_none_for_tools_list() {
+    fn extract_tool_call_name_returns_none_for_tools_list() {
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/list",
             "id": 1
         });
-        assert_eq!(extract_tool_name(&req), None);
+        assert_eq!(extract_tool_call_name(&req), None);
     }
 
     #[test]
-    fn extract_tool_name_returns_none_for_missing_params() {
+    fn extract_tool_call_name_returns_none_for_missing_params() {
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/call",
             "id": 1
         });
-        assert_eq!(extract_tool_name(&req), None);
+        assert_eq!(extract_tool_call_name(&req), None);
     }
 
     #[test]
@@ -808,14 +809,14 @@ mod tests {
 
     #[test]
     fn test_tools_list_logged_at_debug_level_only() {
-        // Verify that extract_tool_name returns None for tools/list,
+        // Verify that extract_tool_call_name returns None for tools/list,
         // meaning it won't be processed as a tool call log entry
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/list",
             "id": 1
         });
-        assert!(extract_tool_name(&req).is_none());
+        assert!(extract_tool_call_name(&req).is_none());
         assert_eq!(extract_method(&req), Some("tools/list"));
     }
 
@@ -835,6 +836,7 @@ mod tests {
             sandbox: "test-sb".to_owned(),
             error_code: None,
             error_message: None,
+            jsonrpc_id: Some("5".to_owned()),
         };
 
         let json = format_tool_call_log(&log).expect("should serialize");
@@ -865,6 +867,7 @@ mod tests {
             sandbox: "sb".to_owned(),
             error_code: Some(-32601),
             error_message: Some("Not found".to_owned()),
+            jsonrpc_id: Some("7".to_owned()),
         };
 
         let json = format_tool_call_log(&log).expect("should serialize");
