@@ -78,6 +78,9 @@ base64 = "0.22"
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Glob pattern matching
+glob = "0.3"
+
 # Utilities
 futures = "0.3"
 bytes = "1"

@@ -122,6 +122,29 @@ pub enum BridgeError {
     Json {
         reason: String,
     },
+
+    /// Tool call denied by policy.
+    #[error(
+        "tool '{tool}' denied by policy for server '{server}': {reason}. \
+         Update the policy with: darkshell policy set --mcp-tools"
+    )]
+    ToolDenied {
+        tool: String,
+        server: String,
+        reason: String,
+    },
+
+    /// Policy configuration is invalid.
+    #[error("invalid MCP tool policy: {reason}")]
+    InvalidPolicy {
+        reason: String,
+    },
+
+    /// Policy file I/O error.
+    #[error("policy file error: {reason}")]
+    PolicyIo {
+        reason: String,
+    },
 }
 
 /// Crate-level result type.

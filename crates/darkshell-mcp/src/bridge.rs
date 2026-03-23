@@ -10,6 +10,10 @@
 
 use crate::credential::{CredentialProvider, CredentialSpec, inject_credentials};
 use crate::error::{BridgeError, Result};
+use crate::logging::{self, ToolCallLogger};
+use crate::policy::{
+    PolicyHolder, evaluate_tool_access, extract_tool_call_name, denied_tool_jsonrpc_error,
+};
 use crate::registry::{
     BridgeRegistration, BridgeStatus, Transport, read_registration, remove_registration,
     write_registration,
@@ -220,6 +224,10 @@ pub struct McpBridge {
     port: u16,
     process: Arc<Mutex<Option<McpProcess>>>,
     env_vars: HashMap<String, String>,
+    /// Tool-level policy holder for hot-reloadable policy enforcement (ADR-010).
+    policy: PolicyHolder,
+    /// Non-blocking structured logger for MCP tool call audit (DS-013).
+    logger: Option<Arc<ToolCallLogger>>,
 }
 
 impl McpBridge {
@@ -233,6 +241,8 @@ impl McpBridge {
     pub fn start(
         config: BridgeConfig,
         credential_provider: &dyn CredentialProvider,
+        policy: PolicyHolder,
+        logger: Option<Arc<ToolCallLogger>>,
     ) -> Result<Self> {
         // Check for existing registration
         if let Some(existing) =
@@ -283,6 +293,8 @@ impl McpBridge {
             port,
             process: Arc::new(Mutex::new(Some(process))),
             env_vars,
+            policy,
+            logger,
         })
     }
 
@@ -301,10 +313,63 @@ impl McpBridge {
         &self.config.server_name
     }
 
+    /// Get the policy holder for this bridge.
+    pub fn policy(&self) -> &PolicyHolder {
+        &self.policy
+    }
+
+    /// Get the tool call logger, if configured.
+    pub fn logger(&self) -> Option<&Arc<ToolCallLogger>> {
+        self.logger.as_ref()
+    }
+
     /// Handle an HTTP request by translating it to JSON-RPC on stdin and
     /// reading the response from stdout.
+    ///
+    /// Before forwarding, evaluates tool-level policy for `tools/call` requests.
+    /// Non-`tools/call` methods (e.g., `tools/list`, `initialize`) are always forwarded.
+    /// After receiving a response, emits a structured log entry via the non-blocking
+    /// tool call logger (DS-013).
     pub async fn handle_request(&self, body: &[u8]) -> Result<serde_json::Value> {
+        let start_time = std::time::Instant::now();
         let jsonrpc = parse_jsonrpc_request(body)?;
+
+        let method = logging::extract_method(&jsonrpc).unwrap_or("unknown");
+        let is_tool_call = method == "tools/call";
+        let is_tools_list = method == "tools/list";
+
+        // Policy evaluation for tools/call requests (ADR-010 compensating control)
+        if let Some(tool_name) = extract_tool_call_name(&jsonrpc) {
+            if let Some(server_policy) = self.policy.get_server_policy(&self.config.server_name).await {
+                let decision = evaluate_tool_access(&server_policy, tool_name);
+                if let crate::policy::PolicyDecision::Deny { ref reason } = decision {
+                    tracing::warn!(
+                        sandbox = %self.config.sandbox,
+                        server = %self.config.server_name,
+                        tool = %tool_name,
+                        reason = %reason,
+                        "denied MCP tool call by policy"
+                    );
+                    let request_id = jsonrpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                    return Ok(denied_tool_jsonrpc_error(&request_id, tool_name, reason));
+                }
+            }
+        } else if jsonrpc.get("method").and_then(|m| m.as_str()) == Some("tools/call") {
+            // tools/call but missing params.name — invalid request (EC-CUSTOM-002)
+            let request_id = jsonrpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            return Ok(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request",
+                    "data": {
+                        "reason": "tools/call request missing 'params.name' field"
+                    }
+                }
+            }));
+        }
+
         let stdin_bytes = format_jsonrpc_for_stdin(&jsonrpc)?;
 
         let mut guard = self.process.lock().await;
@@ -344,7 +409,30 @@ impl McpBridge {
             });
         }
 
-        parse_jsonrpc_response(line.trim())
+        let response = parse_jsonrpc_response(line.trim())?;
+        let duration_ms = u64::try_from(start_time.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        // DS-013: Emit structured log entry after each request/response
+        if let Some(ref logger) = self.logger {
+            if is_tool_call {
+                logger.log_tool_call(
+                    &self.config.server_name,
+                    &self.config.sandbox,
+                    &jsonrpc,
+                    &response,
+                    duration_ms,
+                );
+            } else if is_tools_list {
+                // AC-007: tools/list logged at debug level only
+                logger.log_tools_list(
+                    &self.config.server_name,
+                    &self.config.sandbox,
+                    duration_ms,
+                );
+            }
+        }
+
+        Ok(response)
     }
 
     /// Attempt to restart the MCP server subprocess with backoff.
