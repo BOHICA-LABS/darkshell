@@ -3049,10 +3049,10 @@ mod tests {
         assert!(result.is_ok(), "should parse --rsync flag: {result:?}");
         if let Ok(Cli {
             command:
-                Commands::Sandbox {
+                Some(Commands::Sandbox {
                     command: Some(SandboxCommands::Upload { rsync, .. }),
                     ..
-                },
+                }),
             ..
         }) = result
         {
@@ -3095,7 +3095,7 @@ mod tests {
         );
         if let Ok(Cli {
             command:
-                Commands::Sandbox {
+                Some(Commands::Sandbox {
                     command:
                         Some(SandboxCommands::Upload {
                             rsync,
@@ -3103,7 +3103,7 @@ mod tests {
                             ..
                         }),
                     ..
-                },
+                }),
             ..
         }) = result
         {
@@ -3123,10 +3123,10 @@ mod tests {
         );
         if let Ok(Cli {
             command:
-                Commands::Sandbox {
+                Some(Commands::Sandbox {
                     command: Some(SandboxCommands::Upload { rsync, .. }),
                     ..
-                },
+                }),
             ..
         }) = result
         {
