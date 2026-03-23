@@ -33,14 +33,24 @@ jobs:
 
       - name: Verify crate names match upstream convention
         run: |
-          echo "Checking that all openshell crates retain upstream names..."
-          names=$(grep '^name = ' crates/openshell-*/Cargo.toml)
-          echo "$names"
-          if echo "$names" | grep -v '^name = "openshell-'; then
-            echo "::error::Found openshell crate with non-upstream name"
-            exit 1
-          fi
-          echo "All openshell crate names match upstream convention"
+          echo "Checking that all openshell crate [package].name fields retain upstream names..."
+          failed=0
+          for toml in crates/openshell-*/Cargo.toml; do
+            # Extract only the [package] name, not [[bin]] or [[test]] names
+            pkg_name=$(sed -n '/^\[package\]/,/^\[/{ s/^name = "\(.*\)"/\1/p; }' "$toml" | head -1)
+            if [ -z "$pkg_name" ]; then
+              echo "::warning::Could not extract package name from $toml"
+              continue
+            fi
+            if [[ "$pkg_name" != openshell-* ]]; then
+              echo "::error::Crate $toml has package name '$pkg_name' (expected openshell-*)"
+              failed=1
+            else
+              echo "  ✓ $toml: $pkg_name"
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then exit 1; fi
+          echo "All openshell crate package names match upstream convention"
 
       - name: Verify no unsafe in darkshell crates
         run: |
