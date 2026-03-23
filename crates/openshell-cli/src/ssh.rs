@@ -1618,7 +1618,7 @@ pub fn build_in_sandbox_mcp_command(
         Some(dir) => vec![
             "sh".to_string(),
             "-c".to_string(),
-            format!("cd {dir} && {server_command}"),
+            format!("cd {} && {server_command}", shell_escape(dir)),
         ],
         None => vec![
             "sh".to_string(),
@@ -2817,6 +2817,20 @@ mod tests {
         assert_eq!(
             cmd,
             vec!["sh", "-c", "cd /workspace && /usr/local/bin/mcp-tally"]
+        );
+    }
+
+    #[test]
+    fn build_in_sandbox_mcp_command_escapes_working_dir() {
+        // A working directory with shell metacharacters must be escaped
+        let cmd =
+            build_in_sandbox_mcp_command("/usr/local/bin/mcp-tally", Some("/work space;rm -rf /"))
+                .unwrap();
+        // The dir should be single-quoted to prevent injection
+        assert!(
+            cmd[2].starts_with("cd '/work space;rm -rf /'"),
+            "expected shell-escaped dir, got: {}",
+            cmd[2]
         );
     }
 

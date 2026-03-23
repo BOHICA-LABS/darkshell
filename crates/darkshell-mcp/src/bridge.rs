@@ -188,14 +188,16 @@ pub fn backoff_duration(attempt: u32) -> Option<Duration> {
 // Port selection
 // ---------------------------------------------------------------------------
 
-/// Find an available port in the given range.
+/// Find an available port in the given range and return the bound listener.
 ///
 /// Tries each port from `start` to `end` inclusive, returning the first
-/// one that can be bound.
-pub fn find_available_port(start: u16, end: u16) -> Result<u16> {
+/// `TcpListener` that can be bound. The caller should hold on to the listener
+/// to avoid a TOCTOU race (another process binding the same port between
+/// discovery and use).
+pub fn find_available_port(start: u16, end: u16) -> Result<TcpListener> {
     for port in start..=end {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(port);
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
         }
     }
     Err(BridgeError::NoAvailablePort { start, end })
@@ -222,6 +224,8 @@ struct McpProcess {
 pub struct McpBridge {
     config: BridgeConfig,
     port: u16,
+    /// Pre-bound listener to eliminate TOCTOU race between port discovery and serve().
+    listener: Mutex<Option<TcpListener>>,
     process: Arc<Mutex<Option<McpProcess>>>,
     env_vars: HashMap<String, String>,
     /// Tool-level policy holder for hot-reloadable policy enforcement (ADR-010).
@@ -269,8 +273,11 @@ impl McpBridge {
         // Resolve credentials
         let env_vars = inject_credentials(&config.credentials, credential_provider)?;
 
-        // Select port
-        let port = find_available_port(config.port_start, config.port_end)?;
+        // Select port — hold the listener to prevent TOCTOU race
+        let listener = find_available_port(config.port_start, config.port_end)?;
+        let port = listener.local_addr().map_err(|e| BridgeError::HttpServer {
+            reason: format!("failed to get local address from listener: {e}"),
+        })?.port();
         tracing::info!(port, "selected available port for MCP bridge");
 
         // Spawn subprocess
@@ -291,6 +298,7 @@ impl McpBridge {
         Ok(Self {
             config,
             port,
+            listener: Mutex::new(Some(listener)),
             process: Arc::new(Mutex::new(Some(process))),
             env_vars,
             policy,
@@ -495,11 +503,21 @@ impl McpBridge {
 
     /// Run the HTTP server, blocking until shutdown is signaled.
     pub async fn serve(self: Arc<Self>, shutdown: oneshot::Receiver<()>) -> Result<()> {
-        let addr: std::net::SocketAddr = ([127, 0, 0, 1], self.port).into();
-        let listener = tokio::net::TcpListener::bind(addr)
+        // Take the pre-bound std listener and convert to tokio — eliminates TOCTOU race.
+        let std_listener = self
+            .listener
+            .lock()
             .await
+            .take()
+            .ok_or_else(|| BridgeError::HttpServer {
+                reason: "listener already consumed (serve called twice?)".to_string(),
+            })?;
+        std_listener.set_nonblocking(true).map_err(|e| BridgeError::HttpServer {
+            reason: format!("failed to set listener to non-blocking: {e}"),
+        })?;
+        let listener = tokio::net::TcpListener::from_std(std_listener)
             .map_err(|e| BridgeError::HttpServer {
-                reason: format!("failed to bind {addr}: {e}"),
+                reason: format!("failed to convert std listener to tokio: {e}"),
             })?;
 
         tracing::info!(
@@ -589,6 +607,35 @@ async fn handle_http_request(
             "method not allowed",
             "MCP bridge only accepts POST requests",
         ));
+    }
+
+    // Reject oversized request bodies before reading (1 MB limit)
+    const MAX_BODY_SIZE: u64 = 1_048_576;
+    if let Some(content_length) = req.headers().get(hyper::header::CONTENT_LENGTH) {
+        if let Ok(len_str) = content_length.to_str() {
+            if let Ok(len) = len_str.parse::<u64>() {
+                if len > MAX_BODY_SIZE {
+                    return Ok(error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body too large",
+                        &format!("Content-Length {len} exceeds maximum of {MAX_BODY_SIZE} bytes"),
+                    ));
+                }
+            }
+        }
+    }
+
+    // Also check size_hint from the body itself (covers chunked transfers)
+    {
+        use hyper::body::Body;
+        let upper = req.body().size_hint().upper().unwrap_or(u64::MAX);
+        if upper > MAX_BODY_SIZE {
+            return Ok(error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request body too large",
+                &format!("body size hint {upper} exceeds maximum of {MAX_BODY_SIZE} bytes"),
+            ));
+        }
     }
 
     // Read body
@@ -816,10 +863,13 @@ mod tests {
     // --- Port selection tests ---
 
     #[test]
-    fn find_available_port_returns_first_free() {
+    fn find_available_port_returns_bound_listener() {
         // Use a high ephemeral range that's likely free
-        let port = find_available_port(19100, 19199).expect("should find port");
+        let listener = find_available_port(19100, 19199).expect("should find port");
+        let port = listener.local_addr().expect("addr").port();
         assert!((19100..=19199).contains(&port));
+        // The listener should be holding the port — rebinding should fail
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_err());
     }
 
     #[test]
@@ -831,7 +881,8 @@ mod tests {
         // If the occupied port happens to be in our test range, the function
         // should skip it
         if (19200..=19210).contains(&occupied_port) {
-            let port = find_available_port(19200, 19210).expect("should find port");
+            let found = find_available_port(19200, 19210).expect("should find port");
+            let port = found.local_addr().expect("addr").port();
             assert_ne!(port, occupied_port);
         }
         // Keep listener alive for duration of test

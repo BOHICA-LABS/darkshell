@@ -19,7 +19,7 @@ pub enum ObserveError {
     },
 
     /// A filter string could not be parsed into a known event type.
-    #[error("unknown event type filter '{filter}'. Valid types: command, file, network, policy, lifecycle")]
+    #[error("unknown event type filter '{filter}'. Valid types: command, file, network, policy, mcp, lifecycle, inference, watch")]
     InvalidFilter {
         /// The filter string that was not recognized.
         filter: String,

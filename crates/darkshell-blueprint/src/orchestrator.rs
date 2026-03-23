@@ -46,6 +46,10 @@ pub enum OrchestrateError {
     #[error("`spec.image` is required. Specify a container image reference (e.g., `ghcr.io/org/image:tag`).")]
     EmptyImage,
 
+    /// Blueprint is structurally invalid (missing required fields that should have been caught by validation).
+    #[error("invalid blueprint: {reason}")]
+    InvalidBlueprint { reason: String },
+
     /// Sandbox creation failed via gateway API.
     #[error("sandbox creation failed: {reason}")]
     SandboxCreateFailed { reason: String },
@@ -211,16 +215,22 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
     let metadata = blueprint
         .metadata
         .as_ref()
-        .expect("validated blueprint must have metadata");
+        .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+            reason: "blueprint is missing required 'metadata' section".to_string(),
+        })?;
     let spec = blueprint
         .spec
         .as_ref()
-        .expect("validated blueprint must have spec");
+        .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+            reason: "blueprint is missing required 'spec' section".to_string(),
+        })?;
 
     let sandbox_name = metadata
         .name
         .clone()
-        .expect("validated blueprint must have name");
+        .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+            reason: "metadata.name is required".to_string(),
+        })?;
 
     let image = match &spec.image {
         Some(img) if !img.is_empty() => img.clone(),
@@ -245,11 +255,15 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
             let name = server
                 .name
                 .clone()
-                .expect("validated server must have name");
+                .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                    reason: "mcp_servers[].name is required".to_string(),
+                })?;
             let transport = server
                 .transport
                 .as_ref()
-                .expect("validated server must have transport");
+                .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                    reason: format!("mcp_servers['{name}'].transport is required"),
+                })?;
 
             match transport {
                 McpTransport::Bridge => {
@@ -258,7 +272,9 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                         command: server
                             .command
                             .clone()
-                            .expect("validated bridge must have command"),
+                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                                reason: "bridge MCP server requires a 'command' field".to_string(),
+                            })?,
                         env: server.env.clone().unwrap_or_default(),
                     });
                 }
@@ -268,7 +284,9 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                         command: server
                             .command
                             .clone()
-                            .expect("validated in-sandbox must have command"),
+                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                                reason: "in-sandbox MCP server requires a 'command' field".to_string(),
+                            })?,
                     });
                 }
                 McpTransport::StreamableHttp => {

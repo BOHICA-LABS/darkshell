@@ -219,4 +219,16 @@ mod tests {
                 .unwrap_or_else(|_| panic!("'{t}' should be a valid event type"));
         }
     }
+
+    #[test]
+    fn invalid_filter_error_message_lists_all_valid_types() {
+        let err = EventFilter::parse("bogus").expect_err("should reject unknown type");
+        let msg = err.to_string();
+        for &t in VALID_EVENT_TYPES {
+            assert!(
+                msg.contains(t),
+                "InvalidFilter error message should mention '{t}', got: {msg}"
+            );
+        }
+    }
 }
