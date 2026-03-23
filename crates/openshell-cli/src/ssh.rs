@@ -942,7 +942,10 @@ pub fn build_filtered_tar_command(
     include: &[String],
     exclude: &[String],
 ) -> String {
-    let sandbox_path_clean = sandbox_path.trim_end_matches('/');
+    let sandbox_path_clean = {
+        let trimmed = sandbox_path.trim_end_matches('/');
+        if trimmed.is_empty() { "/" } else { trimmed }
+    };
     let escaped_path = shell_escape(sandbox_path_clean);
     let parent = sandbox_path_clean.rfind('/').map_or(".", |pos| {
         if pos == 0 {
@@ -2380,24 +2383,19 @@ mod tests {
     /// AC-001: --include filters to matching files via find -name.
     #[test]
     fn build_filtered_tar_command_include_single_pattern() {
-        let cmd = build_filtered_tar_command(
-            "/workspace",
-            &["*.json".to_string()],
-            &[],
-        );
+        let cmd = build_filtered_tar_command("/workspace", &["*.json".to_string()], &[]);
         assert!(cmd.contains("find ."), "should use find for filtering");
         assert!(cmd.contains("-name '*.json'"), "should include -name glob");
-        assert!(cmd.contains("tar cf - --null -T -"), "should pipe find into tar");
+        assert!(
+            cmd.contains("tar cf - --null -T -"),
+            "should pipe find into tar"
+        );
     }
 
     /// AC-002: --exclude omits matching files via negated find predicate.
     #[test]
     fn build_filtered_tar_command_exclude_single_pattern() {
-        let cmd = build_filtered_tar_command(
-            "/workspace",
-            &[],
-            &["*.log".to_string()],
-        );
+        let cmd = build_filtered_tar_command("/workspace", &[], &["*.log".to_string()]);
         assert!(cmd.contains("! \\("), "should negate exclude predicates");
         assert!(cmd.contains("-name '*.log'"), "should exclude -name glob");
     }
@@ -2447,11 +2445,8 @@ mod tests {
     /// AC-006: path patterns (containing /) use -path instead of -name.
     #[test]
     fn build_filtered_tar_command_path_pattern_uses_find_path() {
-        let cmd = build_filtered_tar_command(
-            "/workspace",
-            &["src/**/*.rs".to_string()],
-            &[],
-        );
+        let cmd =
+            build_filtered_tar_command("/workspace", &["src/**/*.rs".to_string()], &[]);
         assert!(
             cmd.contains("-path 'src/**/*.rs'"),
             "patterns with / should use -path, got: {cmd}"
@@ -2461,11 +2456,7 @@ mod tests {
     /// AC-006: simple glob patterns (no /) use -name.
     #[test]
     fn build_filtered_tar_command_simple_glob_uses_find_name() {
-        let cmd = build_filtered_tar_command(
-            "/workspace",
-            &["*.rs".to_string()],
-            &[],
-        );
+        let cmd = build_filtered_tar_command("/workspace", &["*.rs".to_string()], &[]);
         assert!(
             cmd.contains("-name '*.rs'"),
             "patterns without / should use -name, got: {cmd}"
@@ -2475,11 +2466,7 @@ mod tests {
     /// AC-008: filtering uses find piped to tar (server-side).
     #[test]
     fn build_filtered_tar_command_uses_find_pipe_tar() {
-        let cmd = build_filtered_tar_command(
-            "/workspace",
-            &["*.rs".to_string()],
-            &[],
-        );
+        let cmd = build_filtered_tar_command("/workspace", &["*.rs".to_string()], &[]);
         assert!(
             cmd.contains("find . ") && cmd.contains("-print0 | tar cf - --null -T -"),
             "should use find | tar pipeline for server-side filtering, got: {cmd}"
@@ -2505,6 +2492,16 @@ mod tests {
         );
         // The else branch should still be present for non-directory paths.
         assert!(cmd.contains("else tar cf - -C /workspace file.txt; fi"));
+    }
+
+    /// Relative path without slashes uses "." as parent.
+    #[test]
+    fn build_filtered_tar_command_relative_path() {
+        let cmd = build_filtered_tar_command("data", &[], &[]);
+        assert!(
+            cmd.contains("-C . data"),
+            "relative path should use . as parent, got: {cmd}"
+        );
     }
 
     /// Root path "/" is handled correctly.
