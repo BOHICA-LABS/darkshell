@@ -672,6 +672,182 @@ pub async fn sandbox_sync_down(
     Ok(())
 }
 
+/// Build a server-side tar command string with optional `--include`/`--exclude`
+/// patterns applied via `find` + pattern filtering.
+///
+/// This is a pure function (no I/O) to make it easy to test.
+///
+/// When `include` and `exclude` are both empty, returns the same tar command
+/// as the upstream `sandbox_sync_down` (AC-010).
+///
+/// `--exclude` takes precedence over `--include` when both match (AC-005).
+pub fn build_filtered_tar_command(
+    sandbox_path: &str,
+    include: &[String],
+    exclude: &[String],
+) -> String {
+    let sandbox_path_clean = sandbox_path.trim_end_matches('/');
+    let escaped_path = shell_escape(sandbox_path_clean);
+    let parent = sandbox_path_clean.rfind('/').map_or(".", |pos| {
+        if pos == 0 {
+            "/"
+        } else {
+            &sandbox_path_clean[..pos]
+        }
+    });
+    let name = sandbox_path_clean
+        .rfind('/')
+        .map_or(sandbox_path_clean, |pos| &sandbox_path_clean[pos + 1..]);
+
+    // No filters -- return the upstream command unchanged (AC-010).
+    if include.is_empty() && exclude.is_empty() {
+        return format!(
+            "if [ -d {path} ]; then tar cf - -C {path} .; else tar cf - -C {parent} {name}; fi",
+            path = escaped_path,
+            parent = shell_escape(parent),
+            name = shell_escape(name),
+        );
+    }
+
+    // Build a find-based pipeline that applies include/exclude filtering
+    // server-side before piping into tar (AC-008).
+    //
+    // Strategy:
+    //   cd <path> && find . <include-preds> <exclude-preds> -print0
+    //     | tar cf - --null -T -
+    //
+    // Include predicates: \( -name 'p1' -o -name 'p2' \)
+    // Exclude predicates: ! \( -name 'e1' -o -name 'e2' \)
+    //
+    // For path patterns (containing /) we use -path; for simple globs we use -name.
+
+    let mut find_predicates = String::new();
+
+    // Include predicates -- OR semantics (AC-003).
+    if !include.is_empty() {
+        find_predicates.push_str("\\( ");
+        for (i, pattern) in include.iter().enumerate() {
+            if i > 0 {
+                find_predicates.push_str(" -o ");
+            }
+            let flag = if pattern.contains('/') {
+                "-path"
+            } else {
+                "-name"
+            };
+            find_predicates.push_str(&format!("{flag} {}", shell_escape(pattern)));
+        }
+        find_predicates.push_str(" \\)");
+    }
+
+    // Exclude predicates -- OR semantics, negated (AC-004, AC-005).
+    if !exclude.is_empty() {
+        if !find_predicates.is_empty() {
+            find_predicates.push(' ');
+        }
+        find_predicates.push_str("! \\( ");
+        for (i, pattern) in exclude.iter().enumerate() {
+            if i > 0 {
+                find_predicates.push_str(" -o ");
+            }
+            let flag = if pattern.contains('/') {
+                "-path"
+            } else {
+                "-name"
+            };
+            find_predicates.push_str(&format!("{flag} {}", shell_escape(pattern)));
+        }
+        find_predicates.push_str(" \\)");
+    }
+
+    format!(
+        "if [ -d {path} ]; then cd {path} && find . {preds} -print0 | tar cf - --null -T -; \
+         else tar cf - -C {parent} {name}; fi",
+        path = escaped_path,
+        preds = find_predicates,
+        parent = shell_escape(parent),
+        name = shell_escape(name),
+    )
+}
+
+/// Pull a path from a sandbox to a local destination using tar-over-SSH,
+/// with optional server-side `--include`/`--exclude` pattern filtering.
+///
+/// When both `include` and `exclude` are empty, behaves identically to
+/// [`sandbox_sync_down`].
+pub async fn sandbox_sync_down_filtered(
+    server: &str,
+    name: &str,
+    sandbox_path: &str,
+    local_path: &Path,
+    tls: &TlsOptions,
+    include: &[String],
+    exclude: &[String],
+) -> Result<()> {
+    let session = ssh_session_config(server, name, tls).await?;
+
+    let tar_cmd = build_filtered_tar_command(sandbox_path, include, exclude);
+
+    let mut ssh = ssh_base_command(&session.proxy_command);
+    ssh.arg("-T")
+        .arg("-o")
+        .arg("RequestTTY=no")
+        .arg("sandbox")
+        .arg(tar_cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+
+    let mut child = ssh.spawn().into_diagnostic()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| miette::miette!("failed to open stdout for ssh process"))?;
+
+    let include_patterns: Vec<String> = include.to_vec();
+    let local_path = local_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        fs::create_dir_all(&local_path)
+            .into_diagnostic()
+            .wrap_err("failed to create local destination directory")?;
+        let mut archive = tar::Archive::new(stdout);
+        let mut file_count: u64 = 0;
+        for entry in archive.entries().into_diagnostic()? {
+            let mut entry = entry.into_diagnostic()?;
+            entry
+                .unpack_in(&local_path)
+                .into_diagnostic()
+                .wrap_err("failed to extract tar entry from sandbox")?;
+            file_count += 1;
+        }
+        // EC-014: warn when include filters match no files.
+        if file_count == 0 && !include_patterns.is_empty() {
+            for pattern in &include_patterns {
+                eprintln!(
+                    "{} No files matched pattern '{pattern}'",
+                    "warning:".yellow().bold()
+                );
+            }
+        }
+        Ok(())
+    })
+    .await
+    .into_diagnostic()??;
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .into_diagnostic()?
+        .into_diagnostic()?;
+
+    if !status.success() {
+        return Err(miette::miette!(
+            "ssh tar create exited with status {status}"
+        ));
+    }
+
+    Ok(())
+}
+
 /// Run the SSH proxy, connecting stdin/stdout to the gateway.
 pub async fn sandbox_ssh_proxy(
     gateway_url: &str,
@@ -1148,5 +1324,143 @@ mod tests {
         let message = foreground_forward_started_message("demo", &spec);
         assert!(message.contains("Forwarding port 3000 to sandbox demo"));
         assert!(message.contains("Access at: http://localhost:3000/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // DS-005: download --include/--exclude filtering tests
+    // -----------------------------------------------------------------------
+
+    /// AC-010: no filters produces the upstream tar command unchanged.
+    #[test]
+    fn build_filtered_tar_command_no_filters_matches_upstream() {
+        let cmd = build_filtered_tar_command("/workspace/project", &[], &[]);
+        assert_eq!(
+            cmd,
+            "if [ -d /workspace/project ]; then tar cf - -C /workspace/project .; \
+             else tar cf - -C /workspace project; fi"
+        );
+    }
+
+    /// AC-001: --include filters to matching files via find -name.
+    #[test]
+    fn build_filtered_tar_command_include_single_pattern() {
+        let cmd = build_filtered_tar_command("/workspace", &["*.json".to_string()], &[]);
+        assert!(cmd.contains("find ."), "should use find for filtering");
+        assert!(cmd.contains("-name '*.json'"), "should include -name glob");
+        assert!(
+            cmd.contains("tar cf - --null -T -"),
+            "should pipe find into tar"
+        );
+    }
+
+    /// AC-002: --exclude omits matching files via negated find predicate.
+    #[test]
+    fn build_filtered_tar_command_exclude_single_pattern() {
+        let cmd = build_filtered_tar_command("/workspace", &[], &["*.log".to_string()]);
+        assert!(cmd.contains("! \\("), "should negate exclude predicates");
+        assert!(cmd.contains("-name '*.log'"), "should exclude -name glob");
+    }
+
+    /// AC-003: multiple --include patterns combined with OR semantics.
+    #[test]
+    fn build_filtered_tar_command_multiple_include_patterns_union() {
+        let cmd = build_filtered_tar_command(
+            "/workspace",
+            &["*.json".to_string(), "*.toml".to_string()],
+            &[],
+        );
+        assert!(cmd.contains("-name '*.json' -o -name '*.toml'"));
+        assert!(cmd.contains("\\( "));
+    }
+
+    /// AC-004: multiple --exclude patterns combined with OR semantics.
+    #[test]
+    fn build_filtered_tar_command_multiple_exclude_patterns_union() {
+        let cmd = build_filtered_tar_command(
+            "/workspace",
+            &[],
+            &["*.log".to_string(), "*.tmp".to_string()],
+        );
+        assert!(cmd.contains("-name '*.log' -o -name '*.tmp'"));
+        assert!(cmd.contains("! \\("));
+    }
+
+    /// AC-005: --include and --exclude combined; exclude comes after include
+    /// in the find predicate chain, giving it precedence.
+    #[test]
+    fn build_filtered_tar_command_include_exclude_combined() {
+        let cmd = build_filtered_tar_command(
+            "/workspace",
+            &["*.rs".to_string()],
+            &["test_*.rs".to_string()],
+        );
+        let include_pos = cmd.find("-name '*.rs'").expect("should have include");
+        let exclude_pos = cmd.find("! \\(").expect("should have exclude");
+        assert!(
+            include_pos < exclude_pos,
+            "include predicates should come before exclude predicates"
+        );
+        assert!(cmd.contains("-name 'test_*.rs'"));
+    }
+
+    /// AC-006: path patterns (containing /) use -path instead of -name.
+    #[test]
+    fn build_filtered_tar_command_path_pattern_uses_find_path() {
+        let cmd =
+            build_filtered_tar_command("/workspace", &["src/**/*.rs".to_string()], &[]);
+        assert!(
+            cmd.contains("-path 'src/**/*.rs'"),
+            "patterns with / should use -path, got: {cmd}"
+        );
+    }
+
+    /// AC-006: simple glob patterns (no /) use -name.
+    #[test]
+    fn build_filtered_tar_command_simple_glob_uses_find_name() {
+        let cmd = build_filtered_tar_command("/workspace", &["*.rs".to_string()], &[]);
+        assert!(
+            cmd.contains("-name '*.rs'"),
+            "patterns without / should use -name, got: {cmd}"
+        );
+    }
+
+    /// AC-008: filtering uses find piped to tar (server-side).
+    #[test]
+    fn build_filtered_tar_command_uses_find_pipe_tar() {
+        let cmd = build_filtered_tar_command("/workspace", &["*.rs".to_string()], &[]);
+        assert!(
+            cmd.contains("find . ") && cmd.contains("-print0 | tar cf - --null -T -"),
+            "should use find | tar pipeline for server-side filtering, got: {cmd}"
+        );
+    }
+
+    /// AC-010: trailing slash on sandbox path is stripped.
+    #[test]
+    fn build_filtered_tar_command_trailing_slash_stripped() {
+        let with_slash = build_filtered_tar_command("/workspace/", &[], &[]);
+        let without_slash = build_filtered_tar_command("/workspace", &[], &[]);
+        assert_eq!(with_slash, without_slash);
+    }
+
+    /// Single file path (non-directory) falls through to the else branch
+    /// even when filters are provided.
+    #[test]
+    fn build_filtered_tar_command_single_file_fallback() {
+        let cmd = build_filtered_tar_command(
+            "/workspace/file.txt",
+            &["*.txt".to_string()],
+            &[],
+        );
+        assert!(cmd.contains("else tar cf - -C /workspace file.txt; fi"));
+    }
+
+    /// Relative path without slashes uses "." as parent.
+    #[test]
+    fn build_filtered_tar_command_relative_path() {
+        let cmd = build_filtered_tar_command("data", &[], &[]);
+        assert!(
+            cmd.contains("-C . data"),
+            "relative path should use . as parent, got: {cmd}"
+        );
     }
 }

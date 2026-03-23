@@ -1260,6 +1260,20 @@ enum SandboxCommands {
         /// Local destination (defaults to `.`).
         #[arg(value_hint = ValueHint::AnyPath)]
         dest: Option<String>,
+
+        /// Include only files matching this glob pattern (repeatable).
+        ///
+        /// Examples: `--include '*.rs'`, `--include '.factory/**'`.
+        /// Multiple patterns are combined with OR semantics.
+        #[arg(long)]
+        include: Vec<String>,
+
+        /// Exclude files matching this glob pattern (repeatable).
+        ///
+        /// Examples: `--exclude '*.log'`, `--exclude 'target/**'`.
+        /// Takes precedence over --include when both match.
+        #[arg(long)]
+        exclude: Vec<String>,
     },
 
     /// Print an SSH config entry for a sandbox.
@@ -2230,6 +2244,8 @@ async fn main() -> Result<()> {
                     name,
                     sandbox_path,
                     dest,
+                    include,
+                    exclude,
                 } => {
                     let ctx = resolve_gateway(&cli.gateway, &cli.gateway_endpoint)?;
                     let mut tls = tls.with_gateway_name(&ctx.name);
@@ -2240,8 +2256,27 @@ async fn main() -> Result<()> {
                         sandbox_path,
                         local_dest.display()
                     );
-                    run::sandbox_sync_down(&ctx.endpoint, &name, &sandbox_path, local_dest, &tls)
+                    if include.is_empty() && exclude.is_empty() {
+                        run::sandbox_sync_down(
+                            &ctx.endpoint,
+                            &name,
+                            &sandbox_path,
+                            local_dest,
+                            &tls,
+                        )
                         .await?;
+                    } else {
+                        run::sandbox_sync_down_filtered(
+                            &ctx.endpoint,
+                            &name,
+                            &sandbox_path,
+                            local_dest,
+                            &tls,
+                            &include,
+                            &exclude,
+                        )
+                        .await?;
+                    }
                     eprintln!("{} Download complete", "✓".green().bold());
                 }
                 other => {
