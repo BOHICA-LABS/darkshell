@@ -25,9 +25,7 @@ pub enum OrchestrateError {
     ValidationFailed { count: usize, details: String },
 
     /// Image is not pullable / not found (EC-009).
-    #[error(
-        "Image `{image}` not found. Check registry access and image name in `spec.image`."
-    )]
+    #[error("Image `{image}` not found. Check registry access and image name in `spec.image`.")]
     ImageNotFound { image: String },
 
     /// Provider does not exist (EC-010).
@@ -43,7 +41,9 @@ pub enum OrchestrateError {
     PolicyFileNotFound { path: String },
 
     /// Empty image (EC-B06).
-    #[error("`spec.image` is required. Specify a container image reference (e.g., `ghcr.io/org/image:tag`).")]
+    #[error(
+        "`spec.image` is required. Specify a container image reference (e.g., `ghcr.io/org/image:tag`)."
+    )]
     EmptyImage,
 
     /// Blueprint is structurally invalid (missing required fields that should have been caught by validation).
@@ -115,7 +115,11 @@ pub enum CompletedStep {
     /// Files were uploaded.
     FilesUploaded { sandbox: String, spec: String },
     /// Streamable-HTTP MCP server was acknowledged (no host-side orchestration needed).
-    StreamableHttpAcknowledged { sandbox: String, server: String, url: String },
+    StreamableHttpAcknowledged {
+        sandbox: String,
+        server: String,
+        url: String,
+    },
 }
 
 impl fmt::Display for CompletedStep {
@@ -138,7 +142,10 @@ impl fmt::Display for CompletedStep {
             Self::ResourceLimitsApplied { .. } => write!(f, "resource limits applied"),
             Self::FilesUploaded { spec, .. } => write!(f, "files '{spec}' uploaded"),
             Self::StreamableHttpAcknowledged { server, url, .. } => {
-                write!(f, "streamable-http MCP server '{server}' acknowledged at {url}")
+                write!(
+                    f,
+                    "streamable-http MCP server '{server}' acknowledged at {url}"
+                )
             }
         }
     }
@@ -228,12 +235,13 @@ pub struct ResourcePlan {
 /// Returns `OrchestrateError::EmptyImage` if `spec.image` is missing or empty
 /// (should not happen after validation, but defense in depth).
 pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan> {
-    let metadata = blueprint
-        .metadata
-        .as_ref()
-        .ok_or_else(|| OrchestrateError::InvalidBlueprint {
-            reason: "blueprint is missing required 'metadata' section".to_string(),
-        })?;
+    let metadata =
+        blueprint
+            .metadata
+            .as_ref()
+            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                reason: "blueprint is missing required 'metadata' section".to_string(),
+            })?;
     let spec = blueprint
         .spec
         .as_ref()
@@ -275,48 +283,48 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                 .ok_or_else(|| OrchestrateError::InvalidBlueprint {
                     reason: "mcp_servers[].name is required".to_string(),
                 })?;
-            let transport = server
-                .transport
-                .as_ref()
-                .ok_or_else(|| OrchestrateError::InvalidBlueprint {
-                    reason: format!("mcp_servers['{name}'].transport is required"),
-                })?;
+            let transport =
+                server
+                    .transport
+                    .as_ref()
+                    .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                        reason: format!("mcp_servers['{name}'].transport is required"),
+                    })?;
 
             #[allow(unreachable_patterns)]
             match transport {
                 McpTransport::Bridge => {
                     bridge_servers.push(McpBridgePlan {
                         name,
-                        command: server
-                            .command
-                            .clone()
-                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                        command: server.command.clone().ok_or_else(|| {
+                            OrchestrateError::InvalidBlueprint {
                                 reason: "bridge MCP server requires a 'command' field".to_string(),
-                            })?,
+                            }
+                        })?,
                         env: server.env.clone().unwrap_or_default(),
                     });
                 }
                 McpTransport::InSandbox => {
                     in_sandbox_servers.push(McpInSandboxPlan {
                         name,
-                        command: server
-                            .command
-                            .clone()
-                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
-                                reason: "in-sandbox MCP server requires a 'command' field".to_string(),
-                            })?,
+                        command: server.command.clone().ok_or_else(|| {
+                            OrchestrateError::InvalidBlueprint {
+                                reason: "in-sandbox MCP server requires a 'command' field"
+                                    .to_string(),
+                            }
+                        })?,
                     });
                 }
                 McpTransport::StreamableHttp => {
                     // BP-M004: track streamable-http servers in plan instead of silently dropping.
                     streamable_http_servers.push(McpStreamableHttpPlan {
                         name,
-                        url: server
-                            .url
-                            .clone()
-                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
-                                reason: "streamable-http MCP server requires a 'url' field".to_string(),
-                            })?,
+                        url: server.url.clone().ok_or_else(|| {
+                            OrchestrateError::InvalidBlueprint {
+                                reason: "streamable-http MCP server requires a 'url' field"
+                                    .to_string(),
+                            }
+                        })?,
                     });
                 }
                 _ => {
@@ -457,10 +465,7 @@ pub struct BlueprintOrchestrator<V: ResourceValidator, G: SandboxGateway> {
 impl<V: ResourceValidator + Sync, G: SandboxGateway + Sync> BlueprintOrchestrator<V, G> {
     /// Create a new orchestrator with the given validator and gateway.
     pub fn new(validator: V, gateway: G) -> Self {
-        Self {
-            validator,
-            gateway,
-        }
+        Self { validator, gateway }
     }
 
     /// Execute the full blueprint orchestration.
@@ -817,10 +822,7 @@ mod tests {
 
     impl MockGateway {
         fn new(log: CallLog) -> Self {
-            Self {
-                log,
-                fail_at: None,
-            }
+            Self { log, fail_at: None }
         }
 
         fn check_fail(&self, step: &str) -> OrchestrateResult<()> {
@@ -876,11 +878,7 @@ mod tests {
             Ok(())
         }
 
-        async fn stop_mcp_bridge(
-            &self,
-            sandbox: &str,
-            server_name: &str,
-        ) -> OrchestrateResult<()> {
+        async fn stop_mcp_bridge(&self, sandbox: &str, server_name: &str) -> OrchestrateResult<()> {
             self.log
                 .log(&format!("stop_mcp_bridge:{sandbox}:{server_name}"));
             Ok(())
@@ -899,22 +897,14 @@ mod tests {
             Ok(())
         }
 
-        async fn establish_port_forward(
-            &self,
-            sandbox: &str,
-            spec: &str,
-        ) -> OrchestrateResult<()> {
+        async fn establish_port_forward(&self, sandbox: &str, spec: &str) -> OrchestrateResult<()> {
             self.log
                 .log(&format!("establish_port_forward:{sandbox}:{spec}"));
             self.check_fail(&format!("establish_port_forward:{spec}"))?;
             Ok(())
         }
 
-        async fn remove_port_forward(
-            &self,
-            sandbox: &str,
-            spec: &str,
-        ) -> OrchestrateResult<()> {
+        async fn remove_port_forward(&self, sandbox: &str, spec: &str) -> OrchestrateResult<()> {
             self.log
                 .log(&format!("remove_port_forward:{sandbox}:{spec}"));
             Ok(())
@@ -1010,9 +1000,9 @@ spec:
 
         let steps = result.expect("should succeed");
         assert!(
-            steps
-                .iter()
-                .any(|s| matches!(s, CompletedStep::SandboxCreated { name } if name == "my-dev-sandbox")),
+            steps.iter().any(
+                |s| matches!(s, CompletedStep::SandboxCreated { name } if name == "my-dev-sandbox")
+            ),
             "should have created sandbox"
         );
         assert!(
@@ -1259,7 +1249,10 @@ spec:
         let blueprint = parse_blueprint(full_blueprint_yaml()).expect("parse");
         let result = orchestrator.execute(&blueprint).await;
 
-        assert!(result.is_err(), "should fail when provider validation fails");
+        assert!(
+            result.is_err(),
+            "should fail when provider validation fails"
+        );
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("Provider 'github' not found"),
@@ -1371,9 +1364,7 @@ spec:
         );
         // sandbox should be deleted.
         assert!(
-            calls
-                .iter()
-                .any(|c| c == "delete_sandbox:rollback-test"),
+            calls.iter().any(|c| c == "delete_sandbox:rollback-test"),
             "should delete sandbox during rollback: {calls:?}"
         );
     }
@@ -1626,10 +1617,10 @@ spec:
         // Expected order: validate* -> create -> policy -> providers -> bridges ->
         //                 in_sandbox -> forwards -> resources -> uploads
         let expected_order = [
-            "validate",    // validate_image
-            "validate",    // validate_provider (github)
-            "validate",    // validate_provider (openai)
-            "validate",    // validate_policy
+            "validate", // validate_image
+            "validate", // validate_provider (github)
+            "validate", // validate_provider (openai)
+            "validate", // validate_policy
             "create_sandbox",
             "apply_policy",
             "attach_provider",
@@ -1707,9 +1698,7 @@ spec:
         );
         // Sandbox should be deleted.
         assert!(
-            calls
-                .iter()
-                .any(|c| c == "delete_sandbox:my-dev-sandbox"),
+            calls.iter().any(|c| c == "delete_sandbox:my-dev-sandbox"),
             "should delete sandbox during rollback: {calls:?}"
         );
     }

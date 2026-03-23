@@ -28,7 +28,10 @@ pub fn validate_name(name: &str) -> Result<()> {
         });
     }
 
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
         return Err(BridgeError::RegistrationIo {
             reason: format!(
                 "name '{name}' contains invalid characters. \
@@ -139,20 +142,13 @@ pub fn registration_path(config_dir: &Path, sandbox: &str, server: &str) -> Resu
 ///
 /// Uses atomic write (write to temp file, then rename) to prevent partial
 /// reads by concurrent processes.
-pub fn write_registration(
-    config_dir: &Path,
-    registration: &BridgeRegistration,
-) -> Result<()> {
+pub fn write_registration(config_dir: &Path, registration: &BridgeRegistration) -> Result<()> {
     let dir = registry_dir(config_dir);
     std::fs::create_dir_all(&dir).map_err(|e| BridgeError::RegistrationIo {
         reason: format!("failed to create directory {}: {e}", dir.display()),
     })?;
 
-    let path = registration_path(
-        config_dir,
-        &registration.sandbox,
-        &registration.server_name,
-    )?;
+    let path = registration_path(config_dir, &registration.sandbox, &registration.server_name)?;
 
     let yaml = serde_yaml::to_string(registration).map_err(|e| BridgeError::RegistrationIo {
         reason: format!("failed to serialize registration: {e}"),
@@ -169,7 +165,11 @@ pub fn write_registration(
         // Clean up temp file on rename failure
         let _ = std::fs::remove_file(&tmp_path);
         BridgeError::RegistrationIo {
-            reason: format!("failed to rename {} -> {}: {e}", tmp_path.display(), path.display()),
+            reason: format!(
+                "failed to rename {} -> {}: {e}",
+                tmp_path.display(),
+                path.display()
+            ),
         }
     })?;
 
@@ -212,11 +212,7 @@ pub fn read_registration(
 ///
 /// Returns `true` if the file existed and was removed, `false` if it
 /// did not exist.
-pub fn remove_registration(
-    config_dir: &Path,
-    sandbox: &str,
-    server: &str,
-) -> Result<bool> {
+pub fn remove_registration(config_dir: &Path, sandbox: &str, server: &str) -> Result<bool> {
     let path = registration_path(config_dir, sandbox, server)?;
 
     match std::fs::remove_file(&path) {
@@ -335,7 +331,11 @@ mod tests {
             sandbox: sandbox.to_string(),
             server_name: server.to_string(),
             transport: Transport::StdioHttp,
-            command: vec!["npx".to_string(), "-y".to_string(), format!("@test/{server}")],
+            command: vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                format!("@test/{server}"),
+            ],
             bridge_pid: std::process::id(),
             forwarded_port: port,
             status: BridgeStatus::Running,
@@ -533,7 +533,10 @@ mod tests {
     fn bridge_status_serializes_correctly() {
         let reg = test_registration("dev", "test", 9100);
         let yaml = serde_yaml::to_string(&reg).expect("serialize");
-        assert!(yaml.contains("running"), "status should serialize as 'running': {yaml}");
+        assert!(
+            yaml.contains("running"),
+            "status should serialize as 'running': {yaml}"
+        );
     }
 
     #[test]

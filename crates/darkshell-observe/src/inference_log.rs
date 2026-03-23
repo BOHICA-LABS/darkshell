@@ -6,8 +6,8 @@
 //!
 //! Redaction is always applied *before* any event emission (SOUL.md Rule 4).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -16,14 +16,18 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 /// Pre-compiled PII regexes (OBS-F002: avoid recompilation on every call).
-static EMAIL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("email regex is valid"));
-static PHONE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("phone regex is valid"));
+static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("email regex is valid")
+});
+static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
+        .expect("phone regex is valid")
+});
 static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn regex is valid"));
-static CC_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b").expect("credit card regex is valid"));
+static CC_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b").expect("credit card regex is valid")
+});
 
 /// Counter for events dropped due to channel backpressure (EC-I02).
 static DROPPED_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -446,8 +450,7 @@ mod tests {
     fn test_inference_event_json_includes_all_fields() {
         let event = make_test_event();
         let json = serde_json::to_string(&event).expect("serialization should succeed");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
 
         assert_eq!(parsed["request_id"], "req-001");
         assert_eq!(parsed["model_provider"], "openai");

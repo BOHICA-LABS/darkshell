@@ -32,7 +32,7 @@ pub mod orchestrator;
 mod schema;
 
 pub use schema::{
-    Blueprint, BlueprintMetadata, BlueprintSpec, McpServerEntry, McpTransport, ParseError,
-    ResourceSpec, ValidationError, ValidationResult, ValidationWarning, parse_blueprint, validate,
-    MAX_BLUEPRINT_SIZE,
+    Blueprint, BlueprintMetadata, BlueprintSpec, MAX_BLUEPRINT_SIZE, McpServerEntry, McpTransport,
+    ParseError, ResourceSpec, ValidationError, ValidationResult, ValidationWarning,
+    parse_blueprint, validate,
 };

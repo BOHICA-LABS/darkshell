@@ -12,7 +12,7 @@ use crate::credential::{CredentialProvider, CredentialSpec, inject_credentials};
 use crate::error::{BridgeError, Result};
 use crate::logging::{self, ToolCallLogger};
 use crate::policy::{
-    PolicyHolder, evaluate_tool_access, extract_tool_call_name, denied_tool_jsonrpc_error,
+    PolicyHolder, denied_tool_jsonrpc_error, evaluate_tool_access, extract_tool_call_name,
 };
 use crate::registry::{
     BridgeRegistration, BridgeStatus, Transport, read_registration, remove_registration,
@@ -112,11 +112,10 @@ fn dirs_default_config() -> PathBuf {
 /// Validates that the body is valid JSON and contains the required JSON-RPC
 /// fields (`jsonrpc`, `method`).
 pub fn parse_jsonrpc_request(body: &[u8]) -> Result<serde_json::Value> {
-    let value: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
-        BridgeError::InvalidJsonRpc {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| BridgeError::InvalidJsonRpc {
             detail: format!("invalid JSON in request body: {e}"),
-        }
-    })?;
+        })?;
 
     // Validate required JSON-RPC 2.0 fields
     if value.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
@@ -306,9 +305,12 @@ impl McpBridge {
 
         // Select port — hold the listener to prevent TOCTOU race
         let listener = find_available_port(config.port_start, config.port_end)?;
-        let port = listener.local_addr().map_err(|e| BridgeError::HttpServer {
-            reason: format!("failed to get local address from listener: {e}"),
-        })?.port();
+        let port = listener
+            .local_addr()
+            .map_err(|e| BridgeError::HttpServer {
+                reason: format!("failed to get local address from listener: {e}"),
+            })?
+            .port();
         tracing::info!(port, "selected available port for MCP bridge");
 
         // Spawn subprocess — store in Arc<Mutex> immediately (MCP-F004)
@@ -333,13 +335,12 @@ impl McpBridge {
         };
         let reg_clone = registration.clone();
         let cfg_dir = config.config_dir.clone();
-        let write_result = tokio::task::spawn_blocking(move || {
-            write_registration(&cfg_dir, &reg_clone)
-        })
-        .await
-        .map_err(|e| BridgeError::RegistrationIo {
-            reason: format!("spawn_blocking join error: {e}"),
-        })?;
+        let write_result =
+            tokio::task::spawn_blocking(move || write_registration(&cfg_dir, &reg_clone))
+                .await
+                .map_err(|e| BridgeError::RegistrationIo {
+                    reason: format!("spawn_blocking join error: {e}"),
+                })?;
 
         if let Err(e) = write_result {
             // MCP-F004: Clean up the child process on registration failure
@@ -403,7 +404,11 @@ impl McpBridge {
 
         // Policy evaluation for tools/call requests (ADR-010 compensating control)
         if let Some(tool_name) = extract_tool_call_name(&jsonrpc) {
-            if let Some(server_policy) = self.policy.get_server_policy(&self.config.server_name).await {
+            if let Some(server_policy) = self
+                .policy
+                .get_server_policy(&self.config.server_name)
+                .await
+            {
                 let decision = evaluate_tool_access(&server_policy, tool_name);
                 if let crate::policy::PolicyDecision::Deny { ref reason } = decision {
                     tracing::warn!(
@@ -413,13 +418,19 @@ impl McpBridge {
                         reason = %reason,
                         "denied MCP tool call by policy"
                     );
-                    let request_id = jsonrpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                    let request_id = jsonrpc
+                        .get("id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
                     return Ok(denied_tool_jsonrpc_error(&request_id, tool_name, reason));
                 }
             }
         } else if jsonrpc.get("method").and_then(|m| m.as_str()) == Some("tools/call") {
             // tools/call but missing params.name — invalid request (EC-CUSTOM-002)
-            let request_id = jsonrpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            let request_id = jsonrpc
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             return Ok(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -494,11 +505,7 @@ impl McpBridge {
                 );
             } else if is_tools_list {
                 // AC-007: tools/list logged at debug level only
-                logger.log_tools_list(
-                    &self.config.server_name,
-                    &self.config.sandbox,
-                    duration_ms,
-                );
+                logger.log_tools_list(&self.config.server_name, &self.config.sandbox, duration_ms);
             }
         }
 
@@ -516,15 +523,15 @@ impl McpBridge {
         let mut last_exit = crash_reason.to_string();
 
         for attempt in 0..MAX_RESTART_ATTEMPTS {
-            let delay = backoff_duration(attempt).ok_or_else(|| {
-                BridgeError::MaxRetriesExhausted {
+            let delay =
+                backoff_duration(attempt).ok_or_else(|| BridgeError::MaxRetriesExhausted {
                     attempts: attempt,
                     last_exit: last_exit.clone(),
-                }
-            })?;
+                })?;
 
             // Update registration to Starting status
-            self.update_registration_status(BridgeStatus::Starting).await;
+            self.update_registration_status(BridgeStatus::Starting)
+                .await;
 
             tracing::warn!(
                 sandbox = %self.config.sandbox,
@@ -597,9 +604,8 @@ impl McpBridge {
             ),
         };
         let cfg_dir = self.config.config_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            write_registration(&cfg_dir, &registration)
-        }).await;
+        let result =
+            tokio::task::spawn_blocking(move || write_registration(&cfg_dir, &registration)).await;
 
         match result {
             Ok(Ok(())) => {}
@@ -623,21 +629,24 @@ impl McpBridge {
     /// Run the HTTP server, blocking until shutdown is signaled.
     pub async fn serve(self: Arc<Self>, shutdown: oneshot::Receiver<()>) -> Result<()> {
         // Take the pre-bound std listener and convert to tokio — eliminates TOCTOU race.
-        let std_listener = self
-            .listener
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| BridgeError::HttpServer {
-                reason: "listener already consumed (serve called twice?)".to_string(),
-            })?;
-        std_listener.set_nonblocking(true).map_err(|e| BridgeError::HttpServer {
-            reason: format!("failed to set listener to non-blocking: {e}"),
-        })?;
-        let listener = tokio::net::TcpListener::from_std(std_listener)
+        let std_listener =
+            self.listener
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| BridgeError::HttpServer {
+                    reason: "listener already consumed (serve called twice?)".to_string(),
+                })?;
+        std_listener
+            .set_nonblocking(true)
             .map_err(|e| BridgeError::HttpServer {
-                reason: format!("failed to convert std listener to tokio: {e}"),
+                reason: format!("failed to set listener to non-blocking: {e}"),
             })?;
+        let listener = tokio::net::TcpListener::from_std(std_listener).map_err(|e| {
+            BridgeError::HttpServer {
+                reason: format!("failed to convert std listener to tokio: {e}"),
+            }
+        })?;
 
         tracing::info!(
             port = self.port,
@@ -708,13 +717,11 @@ impl McpBridge {
         let cfg_dir = self.config.config_dir.clone();
         let sandbox = self.config.sandbox.clone();
         let server_name = self.config.server_name.clone();
-        tokio::task::spawn_blocking(move || {
-            remove_registration(&cfg_dir, &sandbox, &server_name)
-        })
-        .await
-        .map_err(|e| BridgeError::RegistrationIo {
-            reason: format!("spawn_blocking join error: {e}"),
-        })??;
+        tokio::task::spawn_blocking(move || remove_registration(&cfg_dir, &sandbox, &server_name))
+            .await
+            .map_err(|e| BridgeError::RegistrationIo {
+                reason: format!("spawn_blocking join error: {e}"),
+            })??;
 
         Ok(())
     }
@@ -810,10 +817,7 @@ async fn handle_http_request(
 // ---------------------------------------------------------------------------
 
 /// Spawn the MCP server subprocess with the given command and env vars.
-fn spawn_mcp_process(
-    command: &[String],
-    env_vars: &HashMap<String, String>,
-) -> Result<McpProcess> {
+fn spawn_mcp_process(command: &[String], env_vars: &HashMap<String, String>) -> Result<McpProcess> {
     if command.is_empty() {
         return Err(BridgeError::StartupFailed {
             command: String::new(),
@@ -841,15 +845,21 @@ fn spawn_mcp_process(
         reason: e.to_string(),
     })?;
 
-    let stdin = child.stdin.take().ok_or_else(|| BridgeError::StartupFailed {
-        command: command.join(" "),
-        reason: "failed to capture subprocess stdin".to_string(),
-    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| BridgeError::StartupFailed {
+            command: command.join(" "),
+            reason: "failed to capture subprocess stdin".to_string(),
+        })?;
 
-    let stdout = child.stdout.take().ok_or_else(|| BridgeError::StartupFailed {
-        command: command.join(" "),
-        reason: "failed to capture subprocess stdout".to_string(),
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| BridgeError::StartupFailed {
+            command: command.join(" "),
+            reason: "failed to capture subprocess stdout".to_string(),
+        })?;
 
     // Capture stderr in background for debug logging
     if let Some(stderr) = child.stderr.take() {
@@ -1007,7 +1017,9 @@ mod tests {
         let resp = error_response(StatusCode::BAD_GATEWAY, "test error", "test detail");
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
-            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
             Some("application/json"),
             "error response should have application/json content-type"
         );
@@ -1030,9 +1042,7 @@ mod tests {
 
     #[test]
     fn backoff_sequence_sums_to_7_seconds() {
-        let total: Duration = (0..MAX_RESTART_ATTEMPTS)
-            .filter_map(backoff_duration)
-            .sum();
+        let total: Duration = (0..MAX_RESTART_ATTEMPTS).filter_map(backoff_duration).sum();
         assert_eq!(total, Duration::from_secs(7));
     }
 
@@ -1074,7 +1084,13 @@ mod tests {
 
         if l1.is_ok() && l2.is_ok() && l3.is_ok() {
             let err = find_available_port(19300, 19302).unwrap_err();
-            assert!(matches!(err, BridgeError::NoAvailablePort { start: 19300, end: 19302 }));
+            assert!(matches!(
+                err,
+                BridgeError::NoAvailablePort {
+                    start: 19300,
+                    end: 19302
+                }
+            ));
             let msg = err.to_string();
             assert!(msg.contains("19300"), "error should mention range: {msg}");
             assert!(msg.contains("19302"), "error should mention range: {msg}");
@@ -1108,13 +1124,21 @@ mod tests {
 
     #[test]
     fn spawn_mcp_process_nonexistent_binary_returns_error() {
-        let err =
-            spawn_mcp_process(&["nonexistent-binary-xyz-12345".to_string()], &HashMap::new())
-                .unwrap_err();
+        let err = spawn_mcp_process(
+            &["nonexistent-binary-xyz-12345".to_string()],
+            &HashMap::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, BridgeError::StartupFailed { .. }));
         let msg = err.to_string();
-        assert!(msg.contains("nonexistent-binary-xyz-12345"), "error should include command: {msg}");
-        assert!(msg.contains("Ensure the command is installed"), "error should suggest fix: {msg}");
+        assert!(
+            msg.contains("nonexistent-binary-xyz-12345"),
+            "error should include command: {msg}"
+        );
+        assert!(
+            msg.contains("Ensure the command is installed"),
+            "error should suggest fix: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -1153,8 +1177,7 @@ mod tests {
         );
 
         // Use `env` command to print environment, then grep for our var
-        let mut process =
-            spawn_mcp_process(&["env".to_string()], &env).expect("should spawn env");
+        let mut process = spawn_mcp_process(&["env".to_string()], &env).expect("should spawn env");
 
         let mut found = false;
         let mut line = String::new();
@@ -1199,7 +1222,9 @@ mod tests {
         );
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(
-            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
             Some("application/json"),
         );
     }
@@ -1213,7 +1238,9 @@ mod tests {
         );
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
-            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
             Some("application/json"),
         );
     }
@@ -1227,7 +1254,9 @@ mod tests {
         );
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
             Some("application/json"),
         );
     }

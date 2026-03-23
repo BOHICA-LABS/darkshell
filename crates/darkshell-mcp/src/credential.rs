@@ -155,9 +155,7 @@ mod tests {
 
     #[test]
     fn inject_credentials_returns_error_when_key_missing() {
-        let provider = MockProvider::new(vec![
-            ("perplexity", "PERPLEXITY_API_KEY", "secret-123"),
-        ]);
+        let provider = MockProvider::new(vec![("perplexity", "PERPLEXITY_API_KEY", "secret-123")]);
 
         let specs = vec![CredentialSpec {
             provider: "perplexity".to_string(),
@@ -174,7 +172,10 @@ mod tests {
         }
         // Verify error message is actionable
         let msg = err.to_string();
-        assert!(msg.contains("darkshell provider create"), "error should suggest fix: {msg}");
+        assert!(
+            msg.contains("darkshell provider create"),
+            "error should suggest fix: {msg}"
+        );
     }
 
     #[test]
@@ -192,7 +193,10 @@ mod tests {
             other => panic!("expected ProviderUnavailable, got: {other}"),
         }
         let msg = err.to_string();
-        assert!(msg.contains("darkshell status"), "error should suggest fix: {msg}");
+        assert!(
+            msg.contains("darkshell status"),
+            "error should suggest fix: {msg}"
+        );
     }
 
     #[test]
@@ -206,7 +210,9 @@ mod tests {
     fn env_credential_provider_reads_host_env() {
         // Use HOME which is reliably set in test environments.
         let provider = EnvCredentialProvider;
-        let value = provider.resolve("test-provider", "HOME").expect("should resolve");
+        let value = provider
+            .resolve("test-provider", "HOME")
+            .expect("should resolve");
         assert!(!value.is_empty(), "HOME should be non-empty");
     }
 

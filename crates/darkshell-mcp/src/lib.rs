@@ -41,11 +41,11 @@ pub mod registry;
 pub use bridge::{BridgeConfig, McpBridge, PORT_RANGE_END, PORT_RANGE_START};
 pub use credential::{CredentialProvider, CredentialSpec, EnvCredentialProvider};
 pub use error::{BridgeError, Result};
+pub use logging::{McpToolCallLog, ToolCallLogger, format_tool_call_log};
 pub use policy::{
     McpPolicyFile, McpToolPolicy, PolicyDecision, PolicyHolder, evaluate_tool_access,
     extract_tool_call_name,
 };
-pub use logging::{McpToolCallLog, ToolCallLogger, format_tool_call_log};
 pub use registry::{
     BridgeRegistration, BridgeStatus, Transport, cleanup_sandbox, list_registrations,
     read_registration, remove_registration, validate_name, write_registration,

@@ -8,11 +8,11 @@
 //! progress reporting wrappers.
 
 use openshell_cli::progress::{
-    calculate_local_size, CountingReader, CountingWriter, TransferDirection, TransferProgress,
+    CountingReader, CountingWriter, TransferDirection, TransferProgress, calculate_local_size,
 };
 use openshell_cli::ssh::{
-    build_filtered_tar_command, compute_upload_diff, format_dry_run_json, FileEntry,
-    ModifiedEntry, UploadDiff,
+    FileEntry, ModifiedEntry, UploadDiff, build_filtered_tar_command, compute_upload_diff,
+    format_dry_run_json,
 };
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -84,11 +84,8 @@ fn test_filtered_tar_command_with_exclude() {
 fn test_filtered_tar_command_exclude_precedence() {
     // AC-005: When both include and exclude are present, exclude predicates
     // appear after include predicates so find evaluates them in order.
-    let cmd = build_filtered_tar_command(
-        "/workspace",
-        &["*.rs".to_string()],
-        &["*.bak".to_string()],
-    );
+    let cmd =
+        build_filtered_tar_command("/workspace", &["*.rs".to_string()], &["*.bak".to_string()]);
 
     let include_pos = cmd
         .find("\\( -name")
@@ -266,8 +263,7 @@ fn test_progress_counting_writer() {
 
     let inner = writer.finish();
     assert_eq!(
-        inner,
-        b"hello world!!",
+        inner, b"hello world!!",
         "all bytes must pass through to inner writer"
     );
 }
@@ -285,8 +281,7 @@ fn test_progress_counting_reader() {
     let mut output = Vec::new();
     reader.read_to_end(&mut output).expect("read");
     assert_eq!(
-        output,
-        b"hello world",
+        output, b"hello world",
         "all bytes must pass through from inner reader"
     );
 }

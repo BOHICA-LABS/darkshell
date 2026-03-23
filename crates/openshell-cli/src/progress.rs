@@ -101,10 +101,8 @@ impl TransferProgress {
     /// is emitted. When `total` is 0 the bar is finished immediately.
     pub fn new(total: u64, direction: TransferDirection, is_tty: bool) -> Self {
         let bar = if is_tty {
-            let pb = ProgressBar::with_draw_target(
-                Some(total),
-                ProgressDrawTarget::stderr_with_hz(10),
-            );
+            let pb =
+                ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stderr_with_hz(10));
             let style = ProgressStyle::with_template(
                 "{prefix} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec} ETA {eta}",
             )
@@ -134,10 +132,7 @@ impl TransferProgress {
     /// Create a progress bar for a transfer with unknown total (spinner mode).
     pub fn new_unknown(direction: TransferDirection, is_tty: bool) -> Self {
         let bar = if is_tty {
-            let pb = ProgressBar::with_draw_target(
-                None,
-                ProgressDrawTarget::stderr_with_hz(10),
-            );
+            let pb = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr_with_hz(10));
             let style = ProgressStyle::with_template(
                 "{prefix} {spinner:.green} {bytes} {binary_bytes_per_sec}",
             )

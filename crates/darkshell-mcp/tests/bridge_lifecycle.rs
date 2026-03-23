@@ -55,9 +55,7 @@ async fn test_bridge_starts_and_listens_on_port() {
     let bridge = Arc::new(bridge);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let serve_bridge = bridge.clone();
-    let serve_handle = tokio::spawn(async move {
-        serve_bridge.serve(shutdown_rx).await
-    });
+    let serve_handle = tokio::spawn(async move { serve_bridge.serve(shutdown_rx).await });
 
     // Give the server a moment to bind
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -69,7 +67,11 @@ async fn test_bridge_starts_and_listens_on_port() {
         .send()
         .await
         .expect("GET request should connect");
-    assert_eq!(resp.status(), 405, "GET should return 405 Method Not Allowed");
+    assert_eq!(
+        resp.status(),
+        405,
+        "GET should return 405 Method Not Allowed"
+    );
 
     // Clean up
     let _ = shutdown_tx.send(());
@@ -95,9 +97,7 @@ async fn test_bridge_handles_jsonrpc_request() {
     let bridge = Arc::new(bridge);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let serve_bridge = bridge.clone();
-    let serve_handle = tokio::spawn(async move {
-        serve_bridge.serve(shutdown_rx).await
-    });
+    let serve_handle = tokio::spawn(async move { serve_bridge.serve(shutdown_rx).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -116,7 +116,11 @@ async fn test_bridge_handles_jsonrpc_request() {
         .await
         .expect("POST request should connect");
 
-    assert_eq!(resp.status(), 200, "POST with valid JSON-RPC should return 200");
+    assert_eq!(
+        resp.status(),
+        200,
+        "POST with valid JSON-RPC should return 200"
+    );
 
     let body: serde_json::Value = resp.json().await.expect("response should be JSON");
     // cat echoes back the exact input, so it should be valid JSON-RPC
@@ -147,9 +151,7 @@ async fn test_bridge_rejects_oversized_body() {
     let bridge = Arc::new(bridge);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let serve_bridge = bridge.clone();
-    let serve_handle = tokio::spawn(async move {
-        serve_bridge.serve(shutdown_rx).await
-    });
+    let serve_handle = tokio::spawn(async move { serve_bridge.serve(shutdown_rx).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -164,7 +166,11 @@ async fn test_bridge_rejects_oversized_body() {
         .await
         .expect("POST request should connect");
 
-    assert_eq!(resp.status(), 413, "oversized body should return 413 Payload Too Large");
+    assert_eq!(
+        resp.status(),
+        413,
+        "oversized body should return 413 Payload Too Large"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = serve_handle.await;
@@ -197,8 +203,8 @@ async fn test_bridge_shutdown_cleans_up() {
     bridge.shutdown().await.expect("shutdown should succeed");
 
     // Verify registration file is gone
-    let reg_after = read_registration(tmp.path(), "test-sb", "echo-clean")
-        .expect("read should succeed");
+    let reg_after =
+        read_registration(tmp.path(), "test-sb", "echo-clean").expect("read should succeed");
     assert!(
         reg_after.is_none(),
         "registration should be removed after shutdown"
@@ -227,9 +233,11 @@ async fn test_bridge_registers_and_deregisters() {
     .expect("bridge should start");
 
     // Verify registration file exists on disk
-    let reg_path = registration_path(tmp.path(), "test-sb", "echo-reg")
-        .expect("valid names");
-    assert!(reg_path.exists(), "registration file should exist after start");
+    let reg_path = registration_path(tmp.path(), "test-sb", "echo-reg").expect("valid names");
+    assert!(
+        reg_path.exists(),
+        "registration file should exist after start"
+    );
 
     // Read it back and verify contents
     let reg = read_registration(tmp.path(), "test-sb", "echo-reg")

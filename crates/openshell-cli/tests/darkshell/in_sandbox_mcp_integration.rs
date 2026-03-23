@@ -15,9 +15,8 @@ fn test_in_sandbox_command_builds_correctly() {
     assert_eq!(cmd[2], "/usr/local/bin/mcp-tally");
 
     // With working dir: should wrap in cd.
-    let cmd_with_dir =
-        build_in_sandbox_mcp_command("/usr/local/bin/mcp-tally", Some("/workspace"))
-            .expect("should build command with working dir");
+    let cmd_with_dir = build_in_sandbox_mcp_command("/usr/local/bin/mcp-tally", Some("/workspace"))
+        .expect("should build command with working dir");
     assert_eq!(cmd_with_dir.len(), 3, "command should have 3 parts");
     assert_eq!(cmd_with_dir[0], "sh");
     assert_eq!(cmd_with_dir[1], "-c");
@@ -50,8 +49,7 @@ fn test_in_sandbox_rejects_credential_env_vars() {
 
     for var in &credential_vars {
         let vars = vec![var.clone()];
-        let err = reject_credential_env_vars(&vars)
-            .unwrap_err();
+        let err = reject_credential_env_vars(&vars).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains(var),
@@ -75,13 +73,9 @@ fn test_in_sandbox_credential_rejection_suggests_bridge() {
 #[test]
 fn test_in_sandbox_detects_binary_not_found() {
     // Exit code 127 (command not found).
-    let err = check_in_sandbox_binary_not_found(
-        "dev",
-        "mcp-tally",
-        127,
-        b"sh: mcp-tally: not found",
-    )
-    .unwrap_err();
+    let err =
+        check_in_sandbox_binary_not_found("dev", "mcp-tally", 127, b"sh: mcp-tally: not found")
+            .unwrap_err();
 
     let msg = format!("{err}");
     assert!(
@@ -124,6 +118,5 @@ fn test_in_sandbox_accepts_filesystem_only_env() {
         "EDITOR".to_string(),
     ];
 
-    reject_credential_env_vars(&safe_vars)
-        .expect("non-credential env vars should be accepted");
+    reject_credential_env_vars(&safe_vars).expect("non-credential env vars should be accepted");
 }

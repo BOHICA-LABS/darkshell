@@ -6,12 +6,12 @@
 //! These tests exercise the real `EventStream` with real channels, real
 //! filters, and real serialization.
 
+use darkshell_observe::WatchEvent;
 use darkshell_observe::event::{
     CommandEvent, EventPayload, FileEvent, McpToolCallEvent, NetworkEvent, WatchMetaEvent,
 };
 use darkshell_observe::filter::EventFilter;
 use darkshell_observe::watch::{EventStream, WatchConfig};
-use darkshell_observe::WatchEvent;
 
 #[tokio::test]
 async fn test_event_stream_delivers_events() {
@@ -45,23 +45,17 @@ async fn test_event_stream_delivers_events() {
         .expect("send should succeed");
 
     // Receive events (use try_recv-style via timeout to avoid hanging)
-    let received1 = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        stream.next_event(),
-    )
-    .await
-    .expect("should not timeout")
-    .expect("should receive first event");
+    let received1 = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next_event())
+        .await
+        .expect("should not timeout")
+        .expect("should receive first event");
     assert_eq!(received1.event_type(), "command");
     assert_eq!(received1.sandbox(), "test-sb");
 
-    let received2 = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        stream.next_event(),
-    )
-    .await
-    .expect("should not timeout")
-    .expect("should receive second event");
+    let received2 = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next_event())
+        .await
+        .expect("should not timeout")
+        .expect("should receive second event");
     assert_eq!(received2.event_type(), "file");
 
     // Drop the external sender. The stream still holds its own internal
@@ -122,13 +116,10 @@ async fn test_event_filter_by_type() {
     drop(sender);
 
     // Only the network event should come through (command and MCP filtered out)
-    let received = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        stream.next_event(),
-    )
-    .await
-    .expect("should not timeout")
-    .expect("should receive network event");
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next_event())
+        .await
+        .expect("should not timeout")
+        .expect("should receive network event");
     assert_eq!(received.event_type(), "network");
 }
 

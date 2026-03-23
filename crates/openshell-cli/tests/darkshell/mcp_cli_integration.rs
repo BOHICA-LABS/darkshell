@@ -77,10 +77,7 @@ fn test_validate_server_name_rejects_special_characters() {
         validate_name("my_server").is_err(),
         "underscores should be rejected"
     );
-    assert!(
-        validate_name("foo.bar").is_err(),
-        "dots should be rejected"
-    );
+    assert!(validate_name("foo.bar").is_err(), "dots should be rejected");
 }
 
 // ---------------------------------------------------------------------------
@@ -91,13 +88,20 @@ fn test_validate_server_name_rejects_special_characters() {
 fn test_mcp_add_and_list_lifecycle() {
     let dir = tempfile::tempdir().expect("tempdir");
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             // Add a server
             openshell_cli::mcp::mcp_add(
                 "dev",
                 "perplexity",
-                &["npx".into(), "-y".into(), "@anthropic/perplexity-mcp".into()],
+                &[
+                    "npx".into(),
+                    "-y".into(),
+                    "@anthropic/perplexity-mcp".into(),
+                ],
                 &[],
             )
             .expect("mcp add should succeed");
@@ -131,7 +135,10 @@ fn test_mcp_add_and_remove_lifecycle() {
     darkshell_mcp::registry::write_registration(dir.path(), &reg).expect("write");
 
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             // Verify exists
             let found = darkshell_mcp::registry::read_registration(dir.path(), "dev", "tavily")
@@ -140,8 +147,7 @@ fn test_mcp_add_and_remove_lifecycle() {
             assert_eq!(found.server_name, "tavily");
 
             // Remove (dead PID — no SIGTERM to test process)
-            openshell_cli::mcp::mcp_remove("dev", "tavily")
-                .expect("mcp remove should succeed");
+            openshell_cli::mcp::mcp_remove("dev", "tavily").expect("mcp remove should succeed");
 
             // Verify gone
             let after = darkshell_mcp::registry::read_registration(dir.path(), "dev", "tavily")
@@ -155,7 +161,10 @@ fn test_mcp_add_and_remove_lifecycle() {
 fn test_mcp_remove_nonexistent_gives_actionable_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             let err = openshell_cli::mcp::mcp_remove("dev", "nonexistent")
                 .expect_err("remove nonexistent should fail");
@@ -172,7 +181,10 @@ fn test_mcp_remove_nonexistent_gives_actionable_error() {
 fn test_mcp_list_empty_sandbox() {
     let dir = tempfile::tempdir().expect("tempdir");
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             // List on empty sandbox should succeed without error
             openshell_cli::mcp::mcp_list("empty", openshell_cli::mcp::ListFormat::Human)
@@ -191,7 +203,10 @@ fn test_mcp_list_empty_sandbox() {
 fn test_mcp_in_sandbox_transport_registers() {
     let dir = tempfile::tempdir().expect("tempdir");
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             openshell_cli::mcp::start_in_sandbox_mcp(
                 "dev",
@@ -243,12 +258,14 @@ fn test_cleanup_mcp_for_sandbox_removes_all_registrations() {
     darkshell_mcp::registry::write_registration(dir.path(), &reg2).expect("write");
 
     temp_env::with_vars(
-        [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+        [(
+            "DARKSHELL_CONFIG_DIR",
+            Some(dir.path().to_str().expect("path")),
+        )],
         || {
             openshell_cli::mcp::cleanup_mcp_for_sandbox("dev");
 
-            let remaining =
-                darkshell_mcp::registry::list_registrations(dir.path()).expect("list");
+            let remaining = darkshell_mcp::registry::list_registrations(dir.path()).expect("list");
             assert!(
                 remaining.is_empty(),
                 "all dev registrations should be removed, found: {remaining:?}"

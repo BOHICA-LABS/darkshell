@@ -1732,10 +1732,7 @@ async fn main() -> Result<()> {
                 env_keys,
                 transport,
             } => {
-                let cmd_parts: Vec<String> = command
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect();
+                let cmd_parts: Vec<String> = command.split_whitespace().map(String::from).collect();
                 if transport == "in-sandbox" {
                     openshell_cli::mcp::start_in_sandbox_mcp(&sandbox, &name, &cmd_parts)?;
                 } else {
@@ -2309,8 +2306,7 @@ async fn main() -> Result<()> {
                     // --from-blueprint: delegate to blueprint orchestrator.
                     if let Some(ref blueprint_path) = from_blueprint {
                         let path = std::path::Path::new(blueprint_path);
-                        let _blueprint =
-                            openshell_cli::blueprint::read_blueprint(path)?;
+                        let _blueprint = openshell_cli::blueprint::read_blueprint(path)?;
                         eprintln!(
                             "{} Blueprint loaded: {}",
                             "\u{2713}".green().bold(),
@@ -2620,8 +2616,11 @@ async fn main() -> Result<()> {
                                     "exit_code": result.exit_code,
                                     "duration_ms": result.duration.as_millis() as u64,
                                 });
-                                println!("{}", serde_json::to_string_pretty(&json_output)
-                                    .expect("JSON serialization should not fail"));
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&json_output)
+                                        .expect("JSON serialization should not fail")
+                                );
                             } else {
                                 let _ = std::io::stdout().write_all(&result.stdout);
                                 let _ = std::io::stderr().write_all(&result.stderr);
@@ -2693,7 +2692,11 @@ async fn main() -> Result<()> {
                                         Ok(()) => {
                                             // Process exited normally — sandbox may
                                             // have been deleted (AC-005)
-                                            let deleted = darkshell_observe::watch::sandbox_deleted_event(&sandbox_name, Some("ready"));
+                                            let deleted =
+                                                darkshell_observe::watch::sandbox_deleted_event(
+                                                    &sandbox_name,
+                                                    Some("ready"),
+                                                );
                                             let _ = sender.send(deleted).await;
                                             return;
                                         }
@@ -2704,7 +2707,8 @@ async fn main() -> Result<()> {
                                                 backoff
                                             );
                                             tokio::time::sleep(backoff).await;
-                                            backoff = darkshell_observe::watch::next_backoff(backoff);
+                                            backoff =
+                                                darkshell_observe::watch::next_backoff(backoff);
                                         }
                                     }
                                 }
@@ -2721,9 +2725,8 @@ async fn main() -> Result<()> {
 
                                 // Exit cleanly on sandbox deletion (AC-005)
                                 if event.event_type() == "lifecycle" {
-                                    if let darkshell_observe::EventPayload::SandboxStateChange(
-                                        lc,
-                                    ) = event.payload()
+                                    if let darkshell_observe::EventPayload::SandboxStateChange(lc) =
+                                        event.payload()
                                     {
                                         if lc.phase == "deleted" {
                                             break;
@@ -3213,14 +3216,8 @@ mod tests {
     /// AC-001: `--rsync` flag is accepted on upload subcommand.
     #[test]
     fn upload_rsync_flag_accepted() {
-        let result = Cli::try_parse_from([
-            "darkshell",
-            "sandbox",
-            "upload",
-            "demo",
-            "./src",
-            "--rsync",
-        ]);
+        let result =
+            Cli::try_parse_from(["darkshell", "sandbox", "upload", "demo", "./src", "--rsync"]);
         assert!(result.is_ok(), "should parse --rsync flag: {result:?}");
         if let Ok(Cli {
             command:
@@ -3290,8 +3287,7 @@ mod tests {
     /// AC-006: Upload without --rsync flag still works (no regression).
     #[test]
     fn upload_without_rsync_flag_uses_tar() {
-        let result =
-            Cli::try_parse_from(["darkshell", "sandbox", "upload", "demo", "./src"]);
+        let result = Cli::try_parse_from(["darkshell", "sandbox", "upload", "demo", "./src"]);
         assert!(
             result.is_ok(),
             "upload without --rsync should still parse: {result:?}"
@@ -3577,7 +3573,10 @@ mod tests {
             Some(Commands::Sandbox {
                 command: Some(SandboxCommands::Create { upload, .. }),
             }) => {
-                assert!(upload.is_empty(), "expected empty upload vec, got: {upload:?}");
+                assert!(
+                    upload.is_empty(),
+                    "expected empty upload vec, got: {upload:?}"
+                );
             }
             other => panic!("expected sandbox create, got: {other:?}"),
         }
@@ -3625,10 +3624,7 @@ mod tests {
     #[test]
     fn warn_duplicate_upload_destinations_default_dest_conflict() {
         // Two specs both omitting destination default to /sandbox.
-        let specs = vec![
-            ("a".to_string(), None, true),
-            ("b".to_string(), None, true),
-        ];
+        let specs = vec![("a".to_string(), None, true), ("b".to_string(), None, true)];
         warn_duplicate_upload_destinations(&specs); // should not panic, will print warning
     }
 

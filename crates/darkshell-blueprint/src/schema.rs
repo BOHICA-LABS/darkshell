@@ -377,7 +377,10 @@ fn validate_metadata(
                             ),
                         });
                     }
-                    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                    if !name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                    {
                         errors.push(ValidationError {
                             field: "metadata.name".to_owned(),
                             message: format!(
@@ -385,7 +388,8 @@ fn validate_metadata(
                                  Sandbox names must match [a-z0-9]([a-z0-9-]*[a-z0-9])?."
                             ),
                         });
-                    } else if !name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    } else if !name
+                        .starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
                         || !name.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
                     {
                         errors.push(ValidationError {
@@ -572,8 +576,7 @@ fn validate_mcp_transport(
             if server.url.is_some() {
                 errors.push(ValidationError {
                     field: format!("{prefix}.url"),
-                    message: "Transport 'bridge' does not use 'url'. Remove this field."
-                        .to_owned(),
+                    message: "Transport 'bridge' does not use 'url'. Remove this field.".to_owned(),
                 });
             }
         }
@@ -677,9 +680,7 @@ fn validate_forwards(
             Ok(0) => {
                 errors.push(ValidationError {
                     field,
-                    message: format!(
-                        "Port 0 is out of range. Must be 1-65535. Got: '{spec}'."
-                    ),
+                    message: format!("Port 0 is out of range. Must be 1-65535. Got: '{spec}'."),
                 });
             }
             Ok(_) => {} // Valid: 1-65535 (u16 range minus 0).
@@ -746,9 +747,7 @@ fn validate_uploads(
         if !spec.contains(':') {
             errors.push(ValidationError {
                 field,
-                message: format!(
-                    "Upload spec must be in format 'local:remote'. Got: '{spec}'."
-                ),
+                message: format!("Upload spec must be in format 'local:remote'. Got: '{spec}'."),
             });
             continue;
         }
@@ -1168,15 +1167,11 @@ spec:
 
         let error_fields: Vec<&str> = result.errors.iter().map(|e| e.field.as_str()).collect();
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("command")),
+            error_fields.iter().any(|f| f.contains("command")),
             "expected command-required error: {error_fields:?}"
         );
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("url")),
+            error_fields.iter().any(|f| f.contains("url")),
             "expected url-forbidden error: {error_fields:?}"
         );
     }
@@ -1201,15 +1196,11 @@ spec:
 
         let error_fields: Vec<&str> = result.errors.iter().map(|e| e.field.as_str()).collect();
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("command")),
+            error_fields.iter().any(|f| f.contains("command")),
             "expected command-required error: {error_fields:?}"
         );
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("env")),
+            error_fields.iter().any(|f| f.contains("env")),
             "expected env-forbidden error: {error_fields:?}"
         );
     }
@@ -1233,15 +1224,11 @@ spec:
 
         let error_fields: Vec<&str> = result.errors.iter().map(|e| e.field.as_str()).collect();
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("url")),
+            error_fields.iter().any(|f| f.contains("url")),
             "expected url-required error: {error_fields:?}"
         );
         assert!(
-            error_fields
-                .iter()
-                .any(|f| f.contains("command")),
+            error_fields.iter().any(|f| f.contains("command")),
             "expected command-forbidden error: {error_fields:?}"
         );
     }

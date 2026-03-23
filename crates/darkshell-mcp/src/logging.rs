@@ -231,10 +231,7 @@ impl ToolCallLogger {
     /// Create a new logger with the given channel capacity and truncation limit.
     ///
     /// Returns the logger and a receiver for consuming log entries.
-    pub fn new(
-        capacity: usize,
-        max_truncate_len: usize,
-    ) -> (Self, mpsc::Receiver<McpToolCallLog>) {
+    pub fn new(capacity: usize, max_truncate_len: usize) -> (Self, mpsc::Receiver<McpToolCallLog>) {
         let (sender, receiver) = mpsc::channel(capacity);
         (
             Self {
@@ -319,12 +316,7 @@ impl ToolCallLogger {
     }
 
     /// Log a `tools/list` request at debug level only (AC-007).
-    pub fn log_tools_list(
-        &self,
-        server_name: &str,
-        sandbox: &str,
-        duration_ms: u64,
-    ) {
+    pub fn log_tools_list(&self, server_name: &str, sandbox: &str, duration_ms: u64) {
         tracing::debug!(
             server = %server_name,
             sandbox = %sandbox,
@@ -746,7 +738,10 @@ mod tests {
         while rx.try_recv().is_ok() {
             count += 1;
         }
-        assert_eq!(count, 10, "channel capacity is 10, should receive 10 entries");
+        assert_eq!(
+            count, 10,
+            "channel capacity is 10, should receive 10 entries"
+        );
     }
 
     #[tokio::test]

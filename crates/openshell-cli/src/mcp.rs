@@ -20,12 +20,9 @@ use std::path::{Path, PathBuf};
 /// Find the next available port starting from `PORT_RANGE_START`, skipping any
 /// ports already claimed by existing registrations.
 pub fn allocate_port(config_dir: &Path) -> Result<u16> {
-    let existing = registry::list_registrations(config_dir)
-        .into_diagnostic()?;
-    let used_ports: std::collections::HashSet<u16> = existing
-        .iter()
-        .map(|r| r.forwarded_port)
-        .collect();
+    let existing = registry::list_registrations(config_dir).into_diagnostic()?;
+    let used_ports: std::collections::HashSet<u16> =
+        existing.iter().map(|r| r.forwarded_port).collect();
 
     for port in bridge::PORT_RANGE_START..=bridge::PORT_RANGE_END {
         if used_ports.contains(&port) {
@@ -89,8 +86,8 @@ pub fn mcp_add(
     let config_dir = resolve_config_dir()?;
 
     // Check for existing registration
-    if let Some(existing) = registry::read_registration(&config_dir, sandbox, server_name)
-        .into_diagnostic()?
+    if let Some(existing) =
+        registry::read_registration(&config_dir, sandbox, server_name).into_diagnostic()?
     {
         // Check if PID is still alive
         if process_is_alive(existing.bridge_pid) {
@@ -111,8 +108,7 @@ pub fn mcp_add(
             stale_pid = existing.bridge_pid,
             "cleaning up stale registration before re-add"
         );
-        registry::remove_registration(&config_dir, sandbox, server_name)
-            .into_diagnostic()?;
+        registry::remove_registration(&config_dir, sandbox, server_name).into_diagnostic()?;
     }
 
     // Allocate port
@@ -162,16 +158,12 @@ pub fn mcp_add(
 /// registers the server with an `InSandbox` transport marker so that
 /// `mcp list` and `mcp remove` work, and the blueprint orchestrator can
 /// route to the correct execution path.
-pub fn start_in_sandbox_mcp(
-    sandbox: &str,
-    server_name: &str,
-    command: &[String],
-) -> Result<()> {
+pub fn start_in_sandbox_mcp(sandbox: &str, server_name: &str, command: &[String]) -> Result<()> {
     let config_dir = resolve_config_dir()?;
 
     // Check for existing registration
-    if let Some(existing) = registry::read_registration(&config_dir, sandbox, server_name)
-        .into_diagnostic()?
+    if let Some(existing) =
+        registry::read_registration(&config_dir, sandbox, server_name).into_diagnostic()?
     {
         if process_is_alive(existing.bridge_pid) {
             return Err(miette::miette!(
@@ -191,8 +183,7 @@ pub fn start_in_sandbox_mcp(
             stale_pid = existing.bridge_pid,
             "cleaning up stale registration before re-add (in-sandbox)"
         );
-        registry::remove_registration(&config_dir, sandbox, server_name)
-            .into_diagnostic()?;
+        registry::remove_registration(&config_dir, sandbox, server_name).into_diagnostic()?;
     }
 
     // In-sandbox transport does not need a forwarded port or host-side bridge.
@@ -240,10 +231,7 @@ pub enum ListFormat {
 pub fn mcp_list(sandbox: &str, format: ListFormat) -> Result<()> {
     let config_dir = resolve_config_dir()?;
     let all = registry::list_registrations(&config_dir).into_diagnostic()?;
-    let filtered: Vec<&BridgeRegistration> = all
-        .iter()
-        .filter(|r| r.sandbox == sandbox)
-        .collect();
+    let filtered: Vec<&BridgeRegistration> = all.iter().filter(|r| r.sandbox == sandbox).collect();
 
     match format {
         ListFormat::Json => {
@@ -290,11 +278,7 @@ pub fn mcp_list(sandbox: &str, format: ListFormat) -> Result<()> {
                 };
                 println!(
                     "{:<20} {:<15} {:<8} {:<10} {:<10}",
-                    r.server_name,
-                    "stdio-http",
-                    r.forwarded_port,
-                    r.bridge_pid,
-                    live_status,
+                    r.server_name, "stdio-http", r.forwarded_port, r.bridge_pid, live_status,
                 );
             }
         }
@@ -315,8 +299,8 @@ pub fn mcp_remove(sandbox: &str, server_name: &str) -> Result<()> {
     let config_dir = resolve_config_dir()?;
 
     // Check the registration exists
-    let registration = registry::read_registration(&config_dir, sandbox, server_name)
-        .into_diagnostic()?;
+    let registration =
+        registry::read_registration(&config_dir, sandbox, server_name).into_diagnostic()?;
 
     match registration {
         None => {
@@ -358,8 +342,7 @@ pub fn mcp_remove(sandbox: &str, server_name: &str) -> Result<()> {
             }
 
             // Remove registration file
-            registry::remove_registration(&config_dir, sandbox, server_name)
-                .into_diagnostic()?;
+            registry::remove_registration(&config_dir, sandbox, server_name).into_diagnostic()?;
 
             tracing::info!(
                 sandbox = %sandbox,
@@ -509,9 +492,7 @@ fn verify_mcp_bridge_process(pid: u32) -> bool {
                 // Can't determine — fail open.
                 true
             } else {
-                let matches = expected_patterns
-                    .iter()
-                    .any(|pat| comm.contains(pat));
+                let matches = expected_patterns.iter().any(|pat| comm.contains(pat));
                 if !matches {
                     tracing::warn!(
                         pid = pid,
@@ -559,9 +540,18 @@ mod tests {
         assert!(validate_name("valid-name").is_ok());
         assert!(validate_name("abc123").is_ok());
         assert!(validate_name("").is_err(), "empty name should be rejected");
-        assert!(validate_name("UPPER").is_err(), "uppercase should be rejected");
-        assert!(validate_name("../etc").is_err(), "path traversal should be rejected");
-        assert!(validate_name("has space").is_err(), "spaces should be rejected");
+        assert!(
+            validate_name("UPPER").is_err(),
+            "uppercase should be rejected"
+        );
+        assert!(
+            validate_name("../etc").is_err(),
+            "path traversal should be rejected"
+        );
+        assert!(
+            validate_name("has space").is_err(),
+            "spaces should be rejected"
+        );
     }
 
     fn test_registration(sandbox: &str, server: &str, port: u16) -> BridgeRegistration {
@@ -569,7 +559,11 @@ mod tests {
             sandbox: sandbox.to_string(),
             server_name: server.to_string(),
             transport: Transport::StdioHttp,
-            command: vec!["npx".to_string(), "-y".to_string(), format!("@test/{server}")],
+            command: vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                format!("@test/{server}"),
+            ],
             // Use a dead PID so tests don't send SIGTERM to the test process
             bridge_pid: 99_999_999,
             forwarded_port: port,
@@ -582,10 +576,18 @@ mod tests {
     fn test_mcp_add_registers_server_starts_bridge_and_forwards_port() {
         let dir = tempfile::tempdir().expect("tempdir");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
-                mcp_add("dev", "perplexity", &["npx".into(), "-y".into(), "@test/perplexity".into()], &[])
-                    .expect("mcp add should succeed");
+                mcp_add(
+                    "dev",
+                    "perplexity",
+                    &["npx".into(), "-y".into(), "@test/perplexity".into()],
+                    &[],
+                )
+                .expect("mcp add should succeed");
 
                 // Verify registration was written
                 let reg = registry::read_registration(dir.path(), "dev", "perplexity")
@@ -604,7 +606,10 @@ mod tests {
     fn test_mcp_add_creates_registration_file_with_correct_fields() {
         let dir = tempfile::tempdir().expect("tempdir");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 mcp_add(
                     "staging",
@@ -646,7 +651,10 @@ mod tests {
         write_registration(dir.path(), &reg).expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 let err = mcp_add("dev", "perplexity", &["cmd".into()], &[])
                     .expect_err("add with live PID should fail");
@@ -669,11 +677,13 @@ mod tests {
         // Write registrations directly (simulating prior mcp add)
         write_registration(dir.path(), &test_registration("dev", "perplexity", 9100))
             .expect("write");
-        write_registration(dir.path(), &test_registration("dev", "tavily", 9101))
-            .expect("write");
+        write_registration(dir.path(), &test_registration("dev", "tavily", 9101)).expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 // Human format should not error
                 mcp_list("dev", ListFormat::Human).expect("list human");
@@ -690,7 +700,10 @@ mod tests {
             .expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 // Note: mcp_list writes JSON to stdout via println!, which cannot
                 // be captured in-process without redirecting stdout (a non-trivial
@@ -717,8 +730,8 @@ mod tests {
                     })
                     .collect();
                 let json_str = serde_json::to_string_pretty(&enriched).expect("serialize");
-                let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str)
-                    .expect("JSON output should be parseable");
+                let parsed: Vec<serde_json::Value> =
+                    serde_json::from_str(&json_str).expect("JSON output should be parseable");
                 assert_eq!(parsed.len(), 1);
                 assert_eq!(parsed[0]["server_name"], "perplexity");
                 assert_eq!(parsed[0]["sandbox"], "dev");
@@ -730,7 +743,10 @@ mod tests {
     fn test_mcp_list_empty_sandbox_returns_empty_without_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 mcp_list("empty-sandbox", ListFormat::Human).expect("should succeed");
                 mcp_list("empty-sandbox", ListFormat::Json).expect("should succeed");
@@ -747,7 +763,10 @@ mod tests {
         write_registration(dir.path(), &reg).expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 // Verify it exists
                 let before = registry::read_registration(dir.path(), "dev", "perplexity")
@@ -759,8 +778,8 @@ mod tests {
                 mcp_remove("dev", "perplexity").expect("remove should succeed");
 
                 // Verify it's gone
-                let after = registry::read_registration(dir.path(), "dev", "perplexity")
-                    .expect("read");
+                let after =
+                    registry::read_registration(dir.path(), "dev", "perplexity").expect("read");
                 assert!(after.is_none(), "registration should be gone after remove");
             },
         );
@@ -771,14 +790,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_registration(dir.path(), &test_registration("dev", "perplexity", 9100))
             .expect("write");
-        write_registration(dir.path(), &test_registration("dev", "tavily", 9101))
-            .expect("write");
+        write_registration(dir.path(), &test_registration("dev", "tavily", 9101)).expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
-                let err = mcp_remove("dev", "nonexistent")
-                    .expect_err("remove nonexistent should fail");
+                let err =
+                    mcp_remove("dev", "nonexistent").expect_err("remove nonexistent should fail");
                 let msg = err.to_string();
                 assert!(msg.contains("not found"), "should say not found: {msg}");
                 assert!(
@@ -793,10 +814,13 @@ mod tests {
     fn test_mcp_remove_nonexistent_server_no_servers_registered() {
         let dir = tempfile::tempdir().expect("tempdir");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
-                let err = mcp_remove("dev", "nonexistent")
-                    .expect_err("remove nonexistent should fail");
+                let err =
+                    mcp_remove("dev", "nonexistent").expect_err("remove nonexistent should fail");
                 let msg = err.to_string();
                 assert!(msg.contains("not found"), "should say not found: {msg}");
                 assert!(
@@ -812,13 +836,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_registration(dir.path(), &test_registration("dev", "perplexity", 9100))
             .expect("write");
-        write_registration(dir.path(), &test_registration("dev", "tavily", 9101))
-            .expect("write");
+        write_registration(dir.path(), &test_registration("dev", "tavily", 9101)).expect("write");
         write_registration(dir.path(), &test_registration("staging", "github", 9102))
             .expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 cleanup_mcp_for_sandbox("dev");
 
@@ -836,7 +862,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let nonexistent = dir.path().join("does-not-exist");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(nonexistent.to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(nonexistent.to_str().expect("path")),
+            )],
             || {
                 // Should not panic — just logs a warning
                 cleanup_mcp_for_sandbox("dev");
@@ -848,7 +877,10 @@ mod tests {
     fn test_mcp_add_selects_next_available_port_on_conflict() {
         let dir = tempfile::tempdir().expect("tempdir");
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 // Add two servers — they should get different ports
                 mcp_add("dev", "server1", &["cmd".into()], &[]).expect("add 1");
@@ -878,7 +910,10 @@ mod tests {
         write_registration(dir.path(), &reg).expect("write");
 
         temp_env::with_vars(
-            [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
+            [(
+                "DARKSHELL_CONFIG_DIR",
+                Some(dir.path().to_str().expect("path")),
+            )],
             || {
                 let port = allocate_port(dir.path()).expect("should find port");
                 assert_ne!(

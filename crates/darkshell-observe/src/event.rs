@@ -290,17 +290,16 @@ impl WatchEvent {
             }
             EventPayload::NetworkRequest(e) => {
                 let method = e.method.as_deref().unwrap_or("TCP");
-                format!(
-                    "{} {}:{} ({})",
-                    method, e.host, e.port, e.policy_result
-                )
+                format!("{} {}:{} ({})", method, e.host, e.port, e.policy_result)
             }
             EventPayload::PolicyDecision(e) => {
                 let ep = e.endpoint.as_deref().unwrap_or("?");
                 format!("{} {} -> {}", e.action, ep, e.result)
             }
             EventPayload::McpToolCall(e) => {
-                let status = e.success.map_or("pending", |s| if s { "ok" } else { "failed" });
+                let status = e
+                    .success
+                    .map_or("pending", |s| if s { "ok" } else { "failed" });
                 format!("{} via {} [{}]", e.tool_name, e.server, status)
             }
             EventPayload::SandboxStateChange(e) => {
@@ -319,18 +318,16 @@ impl WatchEvent {
 
         if color {
             let type_color = match type_label {
-                "command" => "\x1b[36m",  // cyan
-                "file" => "\x1b[33m",     // yellow
-                "network" => "\x1b[35m",  // magenta
-                "policy" => "\x1b[31m",   // red
-                "mcp" => "\x1b[34m",      // blue
-                "lifecycle" => "\x1b[32m",  // green
+                "command" => "\x1b[36m",   // cyan
+                "file" => "\x1b[33m",      // yellow
+                "network" => "\x1b[35m",   // magenta
+                "policy" => "\x1b[31m",    // red
+                "mcp" => "\x1b[34m",       // blue
+                "lifecycle" => "\x1b[32m", // green
                 "inference" => "\x1b[93m", // bright yellow
                 _ => "\x1b[37m",           // white
             };
-            format!(
-                "\x1b[2m{ts}\x1b[0m {type_color}{type_label:<10}\x1b[0m {detail}"
-            )
+            format!("\x1b[2m{ts}\x1b[0m {type_color}{type_label:<10}\x1b[0m {detail}")
         } else {
             format!("{ts} {type_label:<10} {detail}")
         }
@@ -477,7 +474,9 @@ mod tests {
 
         for payload in payloads {
             let event = WatchEvent::new("sb", payload);
-            let json = event.to_json_line().expect("all event types must serialize");
+            let json = event
+                .to_json_line()
+                .expect("all event types must serialize");
             let _: WatchEvent =
                 serde_json::from_str(&json).expect("all event types must round-trip");
         }

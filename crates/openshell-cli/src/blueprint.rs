@@ -14,9 +14,7 @@ use std::path::Path;
 /// # Errors
 ///
 /// Returns a user-friendly error if the file cannot be read or parsed.
-pub fn read_blueprint(
-    path: &Path,
-) -> miette::Result<darkshell_blueprint::Blueprint> {
+pub fn read_blueprint(path: &Path) -> miette::Result<darkshell_blueprint::Blueprint> {
     let yaml = std::fs::read_to_string(path).map_err(|e| {
         miette::miette!(
             "Failed to read blueprint file '{}': {e}. \
@@ -25,12 +23,8 @@ pub fn read_blueprint(
         )
     })?;
 
-    let blueprint = darkshell_blueprint::parse_blueprint(&yaml).map_err(|e| {
-        miette::miette!(
-            "Failed to parse blueprint '{}': {e}",
-            path.display()
-        )
-    })?;
+    let blueprint = darkshell_blueprint::parse_blueprint(&yaml)
+        .map_err(|e| miette::miette!("Failed to parse blueprint '{}': {e}", path.display()))?;
 
     // Run schema validation and report all errors at once.
     let validation = darkshell_blueprint::validate(&blueprint);

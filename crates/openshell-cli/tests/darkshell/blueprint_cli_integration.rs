@@ -33,7 +33,10 @@ spec:
     .expect("write");
 
     let bp = read_blueprint(&path).expect("read_blueprint should succeed for valid YAML");
-    assert_eq!(bp.metadata.as_ref().unwrap().name.as_deref(), Some("test-sandbox"));
+    assert_eq!(
+        bp.metadata.as_ref().unwrap().name.as_deref(),
+        Some("test-sandbox")
+    );
 }
 
 // ---------------------------------------------------------------------------

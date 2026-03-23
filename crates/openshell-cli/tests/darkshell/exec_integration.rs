@@ -8,8 +8,8 @@
 //! timeout constants.
 
 use openshell_cli::ssh::{
-    build_exec_ssh_command, controlsocket_dir, controlsocket_path, ExecResult,
-    EXEC_DEFAULT_TIMEOUT_SECS, EXIT_CODE_TIMEOUT,
+    EXEC_DEFAULT_TIMEOUT_SECS, EXIT_CODE_TIMEOUT, ExecResult, build_exec_ssh_command,
+    controlsocket_dir, controlsocket_path,
 };
 use std::time::Duration;
 
@@ -39,11 +39,7 @@ fn test_exec_command_builds_with_control_master() {
 
 #[test]
 fn test_exec_command_includes_control_persist() {
-    let cmd = build_exec_ssh_command(
-        "proxy-cmd",
-        &["ls".to_string()],
-        "/tmp/ctrl-%r@%h:%p",
-    );
+    let cmd = build_exec_ssh_command("proxy-cmd", &["ls".to_string()], "/tmp/ctrl-%r@%h:%p");
 
     let args: Vec<String> = cmd
         .as_std()
@@ -66,11 +62,7 @@ fn test_exec_command_includes_control_persist() {
 #[test]
 fn test_exec_command_includes_control_path() {
     let control_path = "/tmp/test-ctrl-%r@%h:%p";
-    let cmd = build_exec_ssh_command(
-        "proxy-cmd",
-        &["ls".to_string()],
-        control_path,
-    );
+    let cmd = build_exec_ssh_command("proxy-cmd", &["ls".to_string()], control_path);
 
     let args: Vec<String> = cmd
         .as_std()
@@ -242,11 +234,7 @@ fn test_exec_shell_escaping() {
 
 #[test]
 fn test_exec_command_non_interactive_flag() {
-    let cmd = build_exec_ssh_command(
-        "proxy-cmd",
-        &["whoami".to_string()],
-        "/tmp/ctrl-%r@%h:%p",
-    );
+    let cmd = build_exec_ssh_command("proxy-cmd", &["whoami".to_string()], "/tmp/ctrl-%r@%h:%p");
 
     let args: Vec<String> = cmd
         .as_std()
@@ -267,15 +255,8 @@ fn test_exec_command_non_interactive_flag() {
 
 #[test]
 fn test_exec_command_program_is_ssh() {
-    let cmd = build_exec_ssh_command(
-        "proxy-cmd",
-        &["ls".to_string()],
-        "/tmp/ctrl-%r@%h:%p",
-    );
+    let cmd = build_exec_ssh_command("proxy-cmd", &["ls".to_string()], "/tmp/ctrl-%r@%h:%p");
 
     let prog = cmd.as_std().get_program();
-    assert_eq!(
-        prog, "ssh",
-        "program must be ssh"
-    );
+    assert_eq!(prog, "ssh", "program must be ssh");
 }

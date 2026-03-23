@@ -47,10 +47,10 @@ use tonic::{Code, Status};
 // Re-export SSH functions for backward compatibility
 pub use crate::ssh::{Editor, print_ssh_config};
 pub use crate::ssh::{
-    sandbox_connect, sandbox_connect_editor, sandbox_exec, sandbox_exec_captured,
-    sandbox_forward, sandbox_ssh_proxy, sandbox_ssh_proxy_by_name, sandbox_sync_down,
-    sandbox_sync_down_filtered, sandbox_sync_up, sandbox_sync_up_files,
-    sandbox_sync_up_rsync_or_tar, sandbox_upload_dry_run, RsyncUploadOptions,
+    RsyncUploadOptions, sandbox_connect, sandbox_connect_editor, sandbox_exec,
+    sandbox_exec_captured, sandbox_forward, sandbox_ssh_proxy, sandbox_ssh_proxy_by_name,
+    sandbox_sync_down, sandbox_sync_down_filtered, sandbox_sync_up, sandbox_sync_up_files,
+    sandbox_sync_up_rsync_or_tar, sandbox_upload_dry_run,
 };
 pub use openshell_core::forward::{
     find_forward_by_port, list_forwards, stop_forward, stop_forwards_for_sandbox,
@@ -2297,7 +2297,12 @@ pub async fn sandbox_create(
                         )
                     })?;
                 }
-                eprintln!("  {} Files uploaded ({}/{})", "\u{2713}".green().bold(), i + 1, upload.len());
+                eprintln!(
+                    "  {} Files uploaded ({}/{})",
+                    "\u{2713}".green().bold(),
+                    i + 1,
+                    upload.len()
+                );
             }
 
             // If --forward was requested, start the background port forward

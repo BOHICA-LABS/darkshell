@@ -1,6 +1,6 @@
 //! End-to-end validation workflow tests: parse YAML -> validate -> collect errors/warnings.
 
-use darkshell_blueprint::{parse_blueprint, validate, ParseError, MAX_BLUEPRINT_SIZE};
+use darkshell_blueprint::{MAX_BLUEPRINT_SIZE, ParseError, parse_blueprint, validate};
 
 #[test]
 fn test_valid_factory_blueprint() {
@@ -169,8 +169,11 @@ spec:
 
     // It should be a warning, not an error (the command is still valid).
     assert!(
-        !result.errors.iter().any(|e| e.field.contains("command")
-            && e.message.to_lowercase().contains("metacharacter")),
+        !result
+            .errors
+            .iter()
+            .any(|e| e.field.contains("command")
+                && e.message.to_lowercase().contains("metacharacter")),
         "shell metacharacters should be a warning, not an error"
     );
 }

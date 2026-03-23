@@ -99,9 +99,7 @@ pub fn evaluate_tool_access(policy: &McpToolPolicy, tool_name: &str) -> PolicyDe
     for pattern_str in &policy.denied_tools {
         if matches_tool_pattern(pattern_str, tool_name) {
             return PolicyDecision::Deny {
-                reason: format!(
-                    "tool '{tool_name}' matches deny pattern '{pattern_str}'"
-                ),
+                reason: format!("tool '{tool_name}' matches deny pattern '{pattern_str}'"),
             };
         }
     }
@@ -114,9 +112,7 @@ pub fn evaluate_tool_access(policy: &McpToolPolicy, tool_name: &str) -> PolicyDe
             }
         }
         return PolicyDecision::Deny {
-            reason: format!(
-                "tool '{tool_name}' not in allowed_tools list"
-            ),
+            reason: format!("tool '{tool_name}' not in allowed_tools list"),
         };
     }
 
@@ -298,8 +294,14 @@ mod tests {
         let decision = evaluate_tool_access(&policy, "write_file");
         match decision {
             PolicyDecision::Deny { reason } => {
-                assert!(reason.contains("write_file"), "reason should contain tool name: {reason}");
-                assert!(reason.contains("not in allowed_tools"), "reason should explain why: {reason}");
+                assert!(
+                    reason.contains("write_file"),
+                    "reason should contain tool name: {reason}"
+                );
+                assert!(
+                    reason.contains("not in allowed_tools"),
+                    "reason should explain why: {reason}"
+                );
             }
             PolicyDecision::Allow => panic!("expected Deny"),
         }
@@ -485,10 +487,12 @@ mod tests {
         assert_eq!(resp["jsonrpc"], "2.0");
         assert_eq!(resp["id"], 42);
         assert_eq!(resp["error"]["code"], -32001);
-        assert!(resp["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("denied"));
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("denied")
+        );
         assert_eq!(resp["error"]["data"]["tool"], "delete_file");
     }
 

@@ -18,12 +18,12 @@ use openshell_core::proto::{CreateSshSessionRequest, GetSandboxRequest};
 use owo_colors::OwoColorize;
 use rustls::pki_types::ServerName;
 use sha2::Digest as _;
+use std::collections::HashMap;
 use std::fs;
 use std::io::IsTerminal;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -701,11 +701,7 @@ pub(crate) fn build_rsync_args(
 ///
 /// Uses a cache keyed by sandbox name to avoid repeated SSH round-trips.
 /// Returns `true` if `which rsync` exits 0 in the sandbox.
-pub async fn check_rsync_available(
-    server: &str,
-    name: &str,
-    tls: &TlsOptions,
-) -> Result<bool> {
+pub async fn check_rsync_available(server: &str, name: &str, tls: &TlsOptions) -> Result<bool> {
     // Check cache first.
     if let Ok(cache) = RSYNC_AVAILABLE_CACHE.lock() {
         if let Some(&available) = cache.get(name) {
@@ -1760,10 +1756,7 @@ pub fn check_in_sandbox_binary_not_found(
     stderr: &[u8],
 ) -> miette::Result<()> {
     let stderr_str = String::from_utf8_lossy(stderr);
-    if stderr_str.contains("not found")
-        || stderr_str.contains("No such file")
-        || exit_code == 127
-    {
+    if stderr_str.contains("not found") || stderr_str.contains("No such file") || exit_code == 127 {
         tracing::error!(
             sandbox = sandbox_name,
             command = server_command,
@@ -1948,18 +1941,11 @@ pub struct ModifiedEntry {
 ///
 /// Every file appears in exactly one category: added, modified, deleted,
 /// or unchanged. This function performs no I/O.
-pub fn compute_upload_diff(
-    local_files: &[FileEntry],
-    remote_files: &[FileEntry],
-) -> UploadDiff {
-    let remote_map: HashMap<&str, &FileEntry> = remote_files
-        .iter()
-        .map(|f| (f.path.as_str(), f))
-        .collect();
-    let local_map: HashMap<&str, &FileEntry> = local_files
-        .iter()
-        .map(|f| (f.path.as_str(), f))
-        .collect();
+pub fn compute_upload_diff(local_files: &[FileEntry], remote_files: &[FileEntry]) -> UploadDiff {
+    let remote_map: HashMap<&str, &FileEntry> =
+        remote_files.iter().map(|f| (f.path.as_str(), f)).collect();
+    let local_map: HashMap<&str, &FileEntry> =
+        local_files.iter().map(|f| (f.path.as_str(), f)).collect();
 
     let mut added = Vec::new();
     let mut modified = Vec::new();
@@ -2130,10 +2116,7 @@ pub async fn collect_remote_hashes(
     }
 
     let stdout = String::from_utf8_lossy(&result.stdout);
-    let dest_prefix = format!(
-        "{}/",
-        sandbox_dest.trim_end_matches('/')
-    );
+    let dest_prefix = format!("{}/", sandbox_dest.trim_end_matches('/'));
 
     let entries: Vec<FileEntry> = stdout
         .lines()
@@ -2164,17 +2147,21 @@ pub fn collect_local_hashes(local_path: &Path) -> Result<Vec<FileEntry>> {
     use std::io::Read;
 
     let mut entries = Vec::new();
-    let base = local_path
-        .canonicalize()
-        .map_err(|e| miette::miette!("failed to canonicalize local path '{}': {e}", local_path.display()))?;
+    let base = local_path.canonicalize().map_err(|e| {
+        miette::miette!(
+            "failed to canonicalize local path '{}': {e}",
+            local_path.display()
+        )
+    })?;
 
     fn walk_dir(base: &Path, current: &Path, entries: &mut Vec<FileEntry>) -> Result<()> {
-        let read_dir = std::fs::read_dir(current)
-            .map_err(|e| miette::miette!("failed to read directory '{}': {e}", current.display()))?;
+        let read_dir = std::fs::read_dir(current).map_err(|e| {
+            miette::miette!("failed to read directory '{}': {e}", current.display())
+        })?;
 
         for entry in read_dir {
-            let entry = entry
-                .map_err(|e| miette::miette!("failed to read directory entry: {e}"))?;
+            let entry =
+                entry.map_err(|e| miette::miette!("failed to read directory entry: {e}"))?;
             let path = entry.path();
             // Follow symlinks by using metadata() (not symlink_metadata).
             let meta = std::fs::metadata(&path)
@@ -2285,9 +2272,10 @@ pub async fn sandbox_upload_dry_run(
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
 
-            let child = cmd.spawn().into_diagnostic().wrap_err(
-                "failed to spawn rsync for dry-run. Is rsync installed on the host?"
-            )?;
+            let child = cmd
+                .spawn()
+                .into_diagnostic()
+                .wrap_err("failed to spawn rsync for dry-run. Is rsync installed on the host?")?;
 
             let output = child.wait_with_output().await.into_diagnostic()?;
 
@@ -2814,7 +2802,10 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o700, "directory must have 0700 permissions, got {mode:04o}");
+            assert_eq!(
+                mode, 0o700,
+                "directory must have 0700 permissions, got {mode:04o}"
+            );
         }
         unsafe {
             match old_xdg {
@@ -2992,15 +2983,14 @@ mod tests {
 
     #[test]
     fn check_in_sandbox_binary_not_found_detects_no_such_file() {
-        let err = check_in_sandbox_binary_not_found(
-            "dev",
-            "mcp-tally",
-            1,
-            b"No such file or directory",
-        )
-        .unwrap_err();
+        let err =
+            check_in_sandbox_binary_not_found("dev", "mcp-tally", 1, b"No such file or directory")
+                .unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("Dockerfile"), "should suggest Dockerfile: {msg}");
+        assert!(
+            msg.contains("Dockerfile"),
+            "should suggest Dockerfile: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3083,8 +3073,7 @@ mod tests {
     /// AC-006: path patterns (containing /) use -path instead of -name.
     #[test]
     fn build_filtered_tar_command_path_pattern_uses_find_path() {
-        let cmd =
-            build_filtered_tar_command("/workspace", &["src/**/*.rs".to_string()], &[]);
+        let cmd = build_filtered_tar_command("/workspace", &["src/**/*.rs".to_string()], &[]);
         assert!(
             cmd.contains("-path 'src/**/*.rs'"),
             "patterns with / should use -path, got: {cmd}"
@@ -3123,11 +3112,7 @@ mod tests {
     /// even when filters are provided.
     #[test]
     fn build_filtered_tar_command_single_file_fallback() {
-        let cmd = build_filtered_tar_command(
-            "/workspace/file.txt",
-            &["*.txt".to_string()],
-            &[],
-        );
+        let cmd = build_filtered_tar_command("/workspace/file.txt", &["*.txt".to_string()], &[]);
         // The else branch should still be present for non-directory paths.
         assert!(cmd.contains("else tar cf - -C /workspace file.txt; fi"));
     }
@@ -3252,8 +3237,12 @@ mod tests {
             follow_symlinks: true,
             progress: false,
         };
-        let quiet_args =
-            build_rsync_args("proxy-cmd", Path::new("/tmp/src"), "/sandbox", &quiet_options);
+        let quiet_args = build_rsync_args(
+            "proxy-cmd",
+            Path::new("/tmp/src"),
+            "/sandbox",
+            &quiet_options,
+        );
         assert!(
             !quiet_args.contains(&"-P".to_string()),
             "must NOT include -P flag when progress is false"

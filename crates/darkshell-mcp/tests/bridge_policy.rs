@@ -124,14 +124,24 @@ async fn test_denied_tool_returns_error() {
         .await
         .expect("request should connect");
 
-    assert_eq!(resp.status(), 200, "denied tool still returns 200 (JSON-RPC error in body)");
+    assert_eq!(
+        resp.status(),
+        200,
+        "denied tool still returns 200 (JSON-RPC error in body)"
+    );
 
     let body: serde_json::Value = resp.json().await.expect("response should be JSON");
     assert_eq!(body["jsonrpc"], "2.0");
-    assert!(body.get("error").is_some(), "response should contain JSON-RPC error");
+    assert!(
+        body.get("error").is_some(),
+        "response should contain JSON-RPC error"
+    );
     assert_eq!(body["error"]["code"], -32001);
     assert!(
-        body["error"]["data"]["tool"].as_str().unwrap().contains("delete"),
+        body["error"]["data"]["tool"]
+            .as_str()
+            .unwrap()
+            .contains("delete"),
         "error should reference the denied tool name"
     );
 

@@ -8,8 +8,8 @@
 //! `WatchMeta` parse-error event rather than failing, per EC-W03.
 
 use crate::event::{
-    CommandEvent, EventPayload, FileEvent, LifecycleEvent, NetworkEvent, PolicyEvent,
-    WatchEvent, WatchMetaEvent,
+    CommandEvent, EventPayload, FileEvent, LifecycleEvent, NetworkEvent, PolicyEvent, WatchEvent,
+    WatchMetaEvent,
 };
 
 /// Attempt to parse a raw log line into a `WatchEvent`.
@@ -224,8 +224,12 @@ mod tests {
 
     #[test]
     fn parse_policy_decision_line() {
-        let event = parse_log_line("sb", "policy: network_access api.com:443 -> allow [rule: default-allow]", 0)
-            .expect("should parse");
+        let event = parse_log_line(
+            "sb",
+            "policy: network_access api.com:443 -> allow [rule: default-allow]",
+            0,
+        )
+        .expect("should parse");
         assert_eq!(event.event_type(), "policy");
         if let EventPayload::PolicyDecision(p) = event.payload() {
             assert_eq!(p.action, "network_access");
@@ -239,8 +243,8 @@ mod tests {
 
     #[test]
     fn parse_network_request_line() {
-        let event = parse_log_line("sb", "network: GET example.com:443 allowed", 0)
-            .expect("should parse");
+        let event =
+            parse_log_line("sb", "network: GET example.com:443 allowed", 0).expect("should parse");
         assert_eq!(event.event_type(), "network");
         if let EventPayload::NetworkRequest(n) = event.payload() {
             assert_eq!(n.host, "example.com");
@@ -254,8 +258,8 @@ mod tests {
 
     #[test]
     fn parse_command_executed_line() {
-        let event = parse_log_line("sb", "exec: cargo build [exit=0] [1234ms]", 0)
-            .expect("should parse");
+        let event =
+            parse_log_line("sb", "exec: cargo build [exit=0] [1234ms]", 0).expect("should parse");
         assert_eq!(event.event_type(), "command");
         if let EventPayload::CommandExecuted(c) = event.payload() {
             assert_eq!(c.command, "cargo build");
@@ -280,9 +284,8 @@ mod tests {
 
     #[test]
     fn parse_file_changed_line() {
-        let event =
-            parse_log_line("sb", "file: modify /sandbox/src/main.rs by cargo", 0)
-                .expect("should parse");
+        let event = parse_log_line("sb", "file: modify /sandbox/src/main.rs by cargo", 0)
+            .expect("should parse");
         assert_eq!(event.event_type(), "file");
         if let EventPayload::FileChanged(f) = event.payload() {
             assert_eq!(f.operation, "modify");
@@ -295,8 +298,7 @@ mod tests {
 
     #[test]
     fn parse_file_changed_without_process() {
-        let event =
-            parse_log_line("sb", "file: create /tmp/output.txt", 0).expect("should parse");
+        let event = parse_log_line("sb", "file: create /tmp/output.txt", 0).expect("should parse");
         if let EventPayload::FileChanged(f) = event.payload() {
             assert_eq!(f.process, None);
         } else {
@@ -306,8 +308,8 @@ mod tests {
 
     #[test]
     fn parse_lifecycle_line() {
-        let event = parse_log_line("sb", "lifecycle: ready from provisioning", 0)
-            .expect("should parse");
+        let event =
+            parse_log_line("sb", "lifecycle: ready from provisioning", 0).expect("should parse");
         assert_eq!(event.event_type(), "lifecycle");
         if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "ready");
@@ -319,8 +321,7 @@ mod tests {
 
     #[test]
     fn parse_lifecycle_without_previous() {
-        let event =
-            parse_log_line("sb", "lifecycle: provisioning", 0).expect("should parse");
+        let event = parse_log_line("sb", "lifecycle: provisioning", 0).expect("should parse");
         if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "provisioning");
             assert_eq!(lc.previous_phase, None);
@@ -355,9 +356,8 @@ mod tests {
 
     #[test]
     fn parse_policy_without_rule() {
-        let event =
-            parse_log_line("sb", "policy: file_access /etc/passwd -> deny", 0)
-                .expect("should parse");
+        let event = parse_log_line("sb", "policy: file_access /etc/passwd -> deny", 0)
+            .expect("should parse");
         if let EventPayload::PolicyDecision(p) = event.payload() {
             assert_eq!(p.result, "deny");
             assert_eq!(p.rule_matched, None);

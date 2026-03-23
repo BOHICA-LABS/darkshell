@@ -16,26 +16,18 @@ pub enum BridgeError {
          Command attempted: `{command}`. \
          Ensure the command is installed and accessible on the host PATH"
     )]
-    StartupFailed {
-        command: String,
-        reason: String,
-    },
+    StartupFailed { command: String, reason: String },
 
     /// All ports in the configured range are occupied.
     #[error(
         "no available ports in range {start}-{end} for MCP bridge. \
          Free a port with: lsof -i :<port> -sTCP:LISTEN | kill <PID>"
     )]
-    NoAvailablePort {
-        start: u16,
-        end: u16,
-    },
+    NoAvailablePort { start: u16, end: u16 },
 
     /// A specific port is already in use.
     #[error("port {port} is already in use")]
-    PortInUse {
-        port: u16,
-    },
+    PortInUse { port: u16 },
 
     /// Credential retrieval failed — gateway provider API unavailable.
     #[error(
@@ -49,44 +41,29 @@ pub enum BridgeError {
         "provider '{provider}' exists but credential '{key}' not found. \
          Set with: darkshell provider create --name {provider} --credential {key}=<value>"
     )]
-    CredentialNotFound {
-        provider: String,
-        key: String,
-    },
+    CredentialNotFound { provider: String, key: String },
 
     /// MCP server returned invalid JSON-RPC response.
     #[error("MCP server returned invalid JSON-RPC: {detail}")]
-    InvalidJsonRpc {
-        detail: String,
-    },
+    InvalidJsonRpc { detail: String },
 
     /// MCP server did not respond to initialize within timeout.
     #[error(
         "MCP server did not respond to initialize within {timeout_secs}s. \
          Check that the command produces JSON-RPC output on stdout"
     )]
-    InitializeTimeout {
-        timeout_secs: u64,
-    },
+    InitializeTimeout { timeout_secs: u64 },
 
     /// MCP server subprocess crashed and max retries exhausted.
     #[error(
         "MCP server crashed {attempts} times and max retries exhausted. \
          Last exit: {last_exit}. Check server logs for crash cause"
     )]
-    MaxRetriesExhausted {
-        attempts: u32,
-        last_exit: String,
-    },
+    MaxRetriesExhausted { attempts: u32, last_exit: String },
 
     /// Sandbox not found.
-    #[error(
-        "sandbox '{name}' not found. Available sandboxes: {available}"
-    )]
-    SandboxNotFound {
-        name: String,
-        available: String,
-    },
+    #[error("sandbox '{name}' not found. Available sandboxes: {available}")]
+    SandboxNotFound { name: String, available: String },
 
     /// A bridge is already running for this sandbox+server combination.
     #[error(
@@ -101,27 +78,19 @@ pub enum BridgeError {
 
     /// Registration file I/O error.
     #[error("registration file error: {reason}")]
-    RegistrationIo {
-        reason: String,
-    },
+    RegistrationIo { reason: String },
 
     /// HTTP server error.
     #[error("HTTP server error: {reason}")]
-    HttpServer {
-        reason: String,
-    },
+    HttpServer { reason: String },
 
     /// Subprocess I/O error.
     #[error("subprocess I/O error: {reason}")]
-    SubprocessIo {
-        reason: String,
-    },
+    SubprocessIo { reason: String },
 
     /// JSON serialization/deserialization error.
     #[error("JSON error: {reason}")]
-    Json {
-        reason: String,
-    },
+    Json { reason: String },
 
     /// Tool call denied by policy.
     #[error(
@@ -136,15 +105,11 @@ pub enum BridgeError {
 
     /// Policy configuration is invalid.
     #[error("invalid MCP tool policy: {reason}")]
-    InvalidPolicy {
-        reason: String,
-    },
+    InvalidPolicy { reason: String },
 
     /// Policy file I/O error.
     #[error("policy file error: {reason}")]
-    PolicyIo {
-        reason: String,
-    },
+    PolicyIo { reason: String },
 }
 
 /// Crate-level result type.

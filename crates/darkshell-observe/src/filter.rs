@@ -240,8 +240,7 @@ mod tests {
     #[test]
     fn all_valid_event_types_are_accepted() {
         for &t in VALID_EVENT_TYPES {
-            EventFilter::parse(t)
-                .unwrap_or_else(|_| panic!("'{t}' should be a valid event type"));
+            EventFilter::parse(t).unwrap_or_else(|_| panic!("'{t}' should be a valid event type"));
         }
     }
 

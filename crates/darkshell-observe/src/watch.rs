@@ -290,7 +290,10 @@ mod tests {
             }),
         );
 
-        sender.send(event.clone()).await.expect("send should succeed");
+        sender
+            .send(event.clone())
+            .await
+            .expect("send should succeed");
         // Drop the extra sender so we can detect stream end
         drop(sender);
 
@@ -332,7 +335,10 @@ mod tests {
         // Drop sender to end the stream
         drop(sender);
 
-        let received = stream.next_event().await.expect("should receive network event");
+        let received = stream
+            .next_event()
+            .await
+            .expect("should receive network event");
         assert_eq!(received.event_type(), "network");
     }
 
@@ -371,7 +377,10 @@ mod tests {
         );
 
         let output = stream.format_event(&event);
-        assert!(!output.contains("\x1b["), "non-TTY output should have no ANSI codes");
+        assert!(
+            !output.contains("\x1b["),
+            "non-TTY output should have no ANSI codes"
+        );
         assert!(output.contains("cargo build"));
     }
 
@@ -390,7 +399,10 @@ mod tests {
         );
 
         let output = stream.format_event(&event);
-        assert!(output.contains("\x1b["), "TTY output should have ANSI codes");
+        assert!(
+            output.contains("\x1b["),
+            "TTY output should have ANSI codes"
+        );
     }
 
     #[test]

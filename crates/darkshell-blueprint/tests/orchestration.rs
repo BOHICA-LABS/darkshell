@@ -19,7 +19,10 @@ struct CallLog {
 
 impl CallLog {
     fn log(&self, call: &str) {
-        self.calls.lock().expect("lock poisoned").push(call.to_string());
+        self.calls
+            .lock()
+            .expect("lock poisoned")
+            .push(call.to_string());
     }
 
     fn entries(&self) -> Vec<String> {
@@ -122,8 +125,9 @@ impl SandboxGateway for MockGateway {
         command: &str,
         _env: &[String],
     ) -> OrchestrateResult<()> {
-        self.log
-            .log(&format!("start_mcp_bridge:{sandbox}:{server_name}:{command}"));
+        self.log.log(&format!(
+            "start_mcp_bridge:{sandbox}:{server_name}:{command}"
+        ));
         self.should_fail("start_mcp_bridge")?;
         Ok(())
     }
@@ -233,35 +237,51 @@ async fn test_full_orchestration_happy_path() {
 
     // All expected step types should be present.
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::SandboxCreated { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::SandboxCreated { .. })),
         "should have created sandbox"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::PolicyApplied { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::PolicyApplied { .. })),
         "should have applied policy"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::ProviderAttached { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::ProviderAttached { .. })),
         "should have attached provider"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::McpBridgeStarted { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::McpBridgeStarted { .. })),
         "should have started MCP bridge"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::McpInSandboxConfigured { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::McpInSandboxConfigured { .. })),
         "should have configured in-sandbox MCP"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::PortForwardEstablished { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::PortForwardEstablished { .. })),
         "should have established port forward"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::ResourceLimitsApplied { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::ResourceLimitsApplied { .. })),
         "should have applied resource limits"
     );
     assert!(
-        steps.iter().any(|s| matches!(s, CompletedStep::FilesUploaded { .. })),
+        steps
+            .iter()
+            .any(|s| matches!(s, CompletedStep::FilesUploaded { .. })),
         "should have uploaded files"
     );
 
@@ -417,7 +437,11 @@ spec:
         .expect("orchestration should succeed");
 
     // Only sandbox creation should have completed.
-    assert_eq!(steps.len(), 1, "minimal blueprint should produce exactly 1 step");
+    assert_eq!(
+        steps.len(),
+        1,
+        "minimal blueprint should produce exactly 1 step"
+    );
     assert!(
         matches!(&steps[0], CompletedStep::SandboxCreated { name } if name == "minimal"),
         "the single step should be SandboxCreated"
