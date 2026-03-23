@@ -93,3 +93,24 @@ temp-env = "0.3"
 tempfile = "3"
 tokio-stream = { workspace = true }
 url = { workspace = true }
+
+# DarkShell integration tests (separated from upstream tests to avoid merge conflicts)
+[[test]]
+name = "darkshell_blueprint_cli_integration"
+path = "tests/darkshell/blueprint_cli_integration.rs"
+
+[[test]]
+name = "darkshell_exec_integration"
+path = "tests/darkshell/exec_integration.rs"
+
+[[test]]
+name = "darkshell_in_sandbox_mcp_integration"
+path = "tests/darkshell/in_sandbox_mcp_integration.rs"
+
+[[test]]
+name = "darkshell_mcp_cli_integration"
+path = "tests/darkshell/mcp_cli_integration.rs"
+
+[[test]]
+name = "darkshell_upload_integration"
+path = "tests/darkshell/upload_integration.rs"
