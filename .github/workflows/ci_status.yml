@@ -1,0 +1,101 @@
+name: CI Status
+
+on:
+  push:
+    branches: [develop, main, "release/**", "hotfix/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# This workflow provides passing status checks for doc-only changes.
+# Without it, PRs that only modify markdown/docs are blocked forever
+# because the real CI jobs (in ci.yml) use paths-ignore and never run,
+# so the required status checks never report success.
+
+jobs:
+  detect:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      doc_only: ${{ steps.check.outputs.doc_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+          CODE_CHANGES=$(echo "$CHANGED" | grep -v -E '\.md$|^docs/|^LICENSE$|^NOTICE$|^\.gitignore$|^\.gitattributes$' || true)
+          if [ -z "$CODE_CHANGES" ]; then
+            echo "doc_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "doc_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # These job names MUST match the required status checks in branch rulesets
+  fmt-status:
+    name: Format
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
+
+  clippy-status:
+    name: Clippy
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
+
+  build-status:
+    name: Build
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
+
+  test-status:
+    name: Test
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
+
+  deny-status:
+    name: Cargo Deny
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
+
+  typos-status:
+    name: Spell Check
+    needs: detect
+    if: needs.detect.outputs.doc_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Skipped — doc-only change"
