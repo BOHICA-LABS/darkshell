@@ -3,6 +3,10 @@
 
 //! SSH connection and proxy utilities.
 
+use crate::progress::{
+    CountingReader, CountingWriter, TransferDirection, TransferProgress, calculate_files_size,
+    calculate_local_size, stderr_is_tty,
+};
 use crate::tls::{TlsOptions, build_rustls_config, grpc_client, require_tls_materials};
 use miette::{IntoDiagnostic, Result, WrapErr};
 #[cfg(unix)]
@@ -485,11 +489,17 @@ pub async fn sandbox_sync_up_files(
         .take()
         .ok_or_else(|| miette::miette!("failed to open stdin for ssh process"))?;
 
-    // Build the tar archive in a blocking task since the tar crate is synchronous.
+    // Calculate total size for progress reporting.
     let base_dir = base_dir.to_path_buf();
     let files = files.to_vec();
+    let total_size = calculate_files_size(&base_dir, &files);
+    let is_tty = stderr_is_tty();
+
+    // Build the tar archive in a blocking task since the tar crate is synchronous.
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut archive = tar::Builder::new(stdin);
+        let progress = TransferProgress::new(total_size, TransferDirection::Upload, is_tty);
+        let counting_writer = CountingWriter::new(stdin, progress);
+        let mut archive = tar::Builder::new(counting_writer);
         for file in &files {
             let full_path = base_dir.join(file);
             if full_path.is_file() {
@@ -504,7 +514,8 @@ pub async fn sandbox_sync_up_files(
                     .wrap_err_with(|| format!("failed to add directory {file} to tar archive"))?;
             }
         }
-        archive.finish().into_diagnostic()?;
+        let counting_writer = archive.into_inner().into_diagnostic()?;
+        counting_writer.finish();
         Ok(())
     })
     .await
@@ -555,8 +566,13 @@ pub async fn sandbox_sync_up(
         .ok_or_else(|| miette::miette!("failed to open stdin for ssh process"))?;
 
     let local_path = local_path.to_path_buf();
+    let total_size = calculate_local_size(&local_path);
+    let is_tty = stderr_is_tty();
+
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut archive = tar::Builder::new(stdin);
+        let progress = TransferProgress::new(total_size, TransferDirection::Upload, is_tty);
+        let counting_writer = CountingWriter::new(stdin, progress);
+        let mut archive = tar::Builder::new(counting_writer);
         if local_path.is_file() {
             let file_name = local_path
                 .file_name()
@@ -572,7 +588,8 @@ pub async fn sandbox_sync_up(
                 local_path.display()
             ));
         }
-        archive.finish().into_diagnostic()?;
+        let counting_writer = archive.into_inner().into_diagnostic()?;
+        counting_writer.finish();
         Ok(())
     })
     .await
@@ -644,11 +661,16 @@ pub async fn sandbox_sync_down(
         .ok_or_else(|| miette::miette!("failed to open stdout for ssh process"))?;
 
     let local_path = local_path.to_path_buf();
+    let is_tty = stderr_is_tty();
+
     tokio::task::spawn_blocking(move || -> Result<()> {
         fs::create_dir_all(&local_path)
             .into_diagnostic()
             .wrap_err("failed to create local destination directory")?;
-        let mut archive = tar::Archive::new(stdout);
+        // Download total is unknown (server doesn't report tar size), so use spinner mode.
+        let progress = TransferProgress::new_unknown(TransferDirection::Download, is_tty);
+        let counting_reader = CountingReader::new(stdout, progress);
+        let mut archive = tar::Archive::new(counting_reader);
         archive
             .unpack(&local_path)
             .into_diagnostic()
