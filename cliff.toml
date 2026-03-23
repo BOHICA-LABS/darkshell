@@ -41,5 +41,5 @@ commit_parsers = [
   { message = "^chore", group = "Miscellaneous" },
 ]
 filter_commits = false
-tag_pattern = "v[0-9].*"
+tag_pattern = "ds-v[0-9].*"
 sort_commits = "oldest"

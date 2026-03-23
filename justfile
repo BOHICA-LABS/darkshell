@@ -100,12 +100,13 @@ release version:
     sed -i '' "s/^version = \".*\"/version = \"{{ version }}\"/" Cargo.toml
     cargo check
     # Generate full changelog
-    git-cliff --config cliff.toml --tag "v{{ version }}" -o CHANGELOG.md
+    git-cliff --config cliff.toml --tag "ds-v{{ version }}" -o CHANGELOG.md
     git add Cargo.toml Cargo.lock CHANGELOG.md
     git commit -m "chore(release): prepare v{{ version }}"
-    git tag -a "v{{ version }}" -m "Release v{{ version }}"
+    git tag -a "ds-v{{ version }}" -m "Release v{{ version }}"
     echo ""
     echo "✓ Release v{{ version }} prepared."
+    echo "  Tag: ds-v{{ version }} (ds- prefix avoids upstream tag collision)"
     echo "  Push with: git push origin develop --tags"
 
 # === Setup ===
