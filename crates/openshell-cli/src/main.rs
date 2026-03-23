@@ -220,6 +220,8 @@ const SANDBOX_EXAMPLES: &str = "\x1b[1mALIAS\x1b[0m
   $ darkshell sandbox create
   $ darkshell sandbox create --from python
   $ darkshell sandbox connect my-sandbox
+  $ darkshell sandbox exec my-sandbox -- git status
+  $ darkshell sandbox exec my-sandbox --json -- cargo build
   $ darkshell sandbox list
   $ darkshell sandbox delete my-sandbox
 ";
@@ -1272,6 +1274,29 @@ enum SandboxCommands {
         #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
         name: Option<String>,
     },
+
+    /// Execute a command in a sandbox and return stdout, stderr, and exit code.
+    ///
+    /// Uses SSH ControlMaster for connection reuse — first exec ~200ms,
+    /// subsequent calls < 20ms.
+    #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
+    Exec {
+        /// Sandbox name.
+        #[arg(add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        name: String,
+
+        /// Timeout in seconds. Default 300 (5 minutes). Use 0 to disable.
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+
+        /// Output results as JSON: {"stdout", "stderr", "exit_code", "duration_ms"}.
+        #[arg(long)]
+        json: bool,
+
+        /// Command to execute (everything after --).
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2285,6 +2310,35 @@ async fn main() -> Result<()> {
                         SandboxCommands::SshConfig { name } => {
                             let name = resolve_sandbox_name(name, &ctx.name)?;
                             run::print_ssh_config(&ctx.name, &name);
+                        }
+                        SandboxCommands::Exec {
+                            name,
+                            timeout,
+                            json,
+                            command,
+                        } => {
+                            let result = openshell_cli::ssh::sandbox_exec_captured(
+                                endpoint, &name, &command, timeout, &tls,
+                            )
+                            .await?;
+
+                            if json {
+                                let json_output = serde_json::json!({
+                                    "stdout": String::from_utf8_lossy(&result.stdout),
+                                    "stderr": String::from_utf8_lossy(&result.stderr),
+                                    "exit_code": result.exit_code,
+                                    "duration_ms": result.duration.as_millis() as u64,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&json_output)
+                                    .expect("JSON serialization should not fail"));
+                            } else {
+                                let _ = std::io::stdout().write_all(&result.stdout);
+                                let _ = std::io::stderr().write_all(&result.stderr);
+                            }
+
+                            if result.exit_code != 0 {
+                                std::process::exit(result.exit_code);
+                            }
                         }
                     }
                 }
