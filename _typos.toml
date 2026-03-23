@@ -5,7 +5,13 @@ extend-exclude = [
     "e2e/",
     "proto/",
     "python/openshell/_proto/",
+    # Upstream OCSF schemas use Apple's UDID term (not a typo)
+    "crates/openshell-ocsf/schemas/",
+    # Upstream architecture docs use crate names like ratatui
+    "architecture/",
 ]
 
 [default.extend-words]
 # Technical terms that typos flags incorrectly
+ratatui = "ratatui"
+UDID = "UDID"

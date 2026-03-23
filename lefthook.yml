@@ -1,0 +1,23 @@
+glob_matcher: doublestar
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-check:
+      glob: "**/*.rs"
+      run: export PATH="$HOME/.cargo/bin:$PATH"; rustup run nightly cargo fmt --all -- --check
+    clippy:
+      glob: "**/*.rs"
+      run: test -f "$HOME/.cargo/env" && . "$HOME/.cargo/env"; cargo clippy --workspace --all-targets
+    test:
+      glob: "**/*.rs"
+      # Pre-commit uses --workspace only to keep hook latency low.
+      # CI runs full integration tests separately.
+      run: test -f "$HOME/.cargo/env" && . "$HOME/.cargo/env"; cargo test --workspace
+    typos:
+      run: test -f "$HOME/.cargo/env" && . "$HOME/.cargo/env"; typos
+    fork-check:
+      glob: "**/Cargo.toml"
+      run: |
+        # Verify darkshell crates have no unsafe code
+        ! grep -r 'unsafe ' crates/darkshell-*/src/ --include='*.rs' -l 2>/dev/null

@@ -1038,7 +1038,8 @@ async fn route_inference_request(
                             // BEGIN DARKSHELL HOOK — DS-020 capture response body
                             #[cfg(feature = "darkshell-inference-log")]
                             {
-                                let total: usize = hook_response_chunks.iter().map(|c| c.len()).sum();
+                                let total: usize =
+                                    hook_response_chunks.iter().map(|c| c.len()).sum();
                                 if total < darkshell_observe::inference_log::MAX_RESPONSE_BYTES {
                                     hook_response_chunks.push(chunk.clone());
                                 }
@@ -1066,8 +1067,10 @@ async fn route_inference_request(
                         hook_response_chunks.iter().map(|c| c.len()).sum();
                     let truncated =
                         total_resp_bytes >= darkshell_observe::inference_log::MAX_RESPONSE_BYTES;
-                    let response_body: Vec<u8> =
-                        hook_response_chunks.into_iter().flat_map(|c| c.to_vec()).collect();
+                    let response_body: Vec<u8> = hook_response_chunks
+                        .into_iter()
+                        .flat_map(|c| c.to_vec())
+                        .collect();
                     let response_str = String::from_utf8_lossy(&response_body).into_owned();
 
                     // Try to extract model from response JSON (common OpenAI-style format)
@@ -1075,8 +1078,8 @@ async fn route_inference_request(
                         extract_inference_metadata(&response_str);
 
                     let event = darkshell_observe::InferenceEvent {
-                        request_id: uuid_ds::Uuid::new_v4().to_string(),
-                        timestamp: chrono_ds::Utc::now(),
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now(),
                         model_provider: pattern.protocol.clone(),
                         model: model.unwrap_or_else(|| "unknown".to_owned()),
                         prompt: hook_request_body,
@@ -1108,8 +1111,8 @@ async fn route_inference_request(
                 #[cfg(feature = "darkshell-inference-log")]
                 {
                     let event = darkshell_observe::InferenceEvent {
-                        request_id: uuid_ds::Uuid::new_v4().to_string(),
-                        timestamp: chrono_ds::Utc::now(),
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now(),
                         model_provider: pattern.protocol.clone(),
                         model: "unknown".to_owned(),
                         prompt: hook_request_body,
@@ -1148,9 +1151,7 @@ async fn route_inference_request(
 
 // BEGIN DARKSHELL HOOK — DS-020 metadata extraction helper
 #[cfg(feature = "darkshell-inference-log")]
-fn extract_inference_metadata(
-    response_body: &str,
-) -> (Option<String>, Option<u64>, Option<u64>) {
+fn extract_inference_metadata(response_body: &str) -> (Option<String>, Option<u64>, Option<u64>) {
     // Best-effort extraction from OpenAI-compatible response format.
     // Returns (model, prompt_tokens, completion_tokens).
     let Ok(json) = serde_json::from_str::<serde_json::Value>(response_body) else {
