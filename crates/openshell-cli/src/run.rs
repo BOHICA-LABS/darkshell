@@ -1797,7 +1797,7 @@ fn shell_escape(s: &str) -> String {
 pub async fn sandbox_create_with_bootstrap(
     name: Option<&str>,
     from: Option<&str>,
-    upload: Option<&(String, Option<String>, bool)>,
+    upload: &[(String, Option<String>, bool)],
     keep: bool,
     gpu: bool,
     editor: Option<Editor>,
@@ -1882,7 +1882,7 @@ pub async fn sandbox_create(
     name: Option<&str>,
     from: Option<&str>,
     gateway_name: &str,
-    upload: Option<&(String, Option<String>, bool)>,
+    upload: &[(String, Option<String>, bool)],
     keep: bool,
     gpu: bool,
     editor: Option<Editor>,
@@ -2253,7 +2253,7 @@ pub async fn sandbox_create(
             drop(stream);
             drop(client);
 
-            if let Some((local_path, sandbox_path, git_ignore)) = upload {
+            for (i, (local_path, sandbox_path, git_ignore)) in upload.iter().enumerate() {
                 let dest = sandbox_path.as_deref().unwrap_or("/sandbox");
                 eprintln!("  {} Uploading files to {dest}...", "\u{2022}".dimmed(),);
                 let local = Path::new(local_path);
@@ -2266,7 +2266,16 @@ pub async fn sandbox_create(
                         dest,
                         &effective_tls,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| {
+                        miette::miette!(
+                            "Upload failed for '{}:{}' (upload {}/{}): {e}",
+                            local_path,
+                            dest,
+                            i + 1,
+                            upload.len()
+                        )
+                    })?;
                 } else if local.exists() {
                     sandbox_sync_up(
                         &effective_server,
@@ -2275,9 +2284,18 @@ pub async fn sandbox_create(
                         dest,
                         &effective_tls,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| {
+                        miette::miette!(
+                            "Upload failed for '{}:{}' (upload {}/{}): {e}",
+                            local_path,
+                            dest,
+                            i + 1,
+                            upload.len()
+                        )
+                    })?;
                 }
-                eprintln!("  {} Files uploaded", "\u{2713}".green().bold(),);
+                eprintln!("  {} Files uploaded ({}/{})", "\u{2713}".green().bold(), i + 1, upload.len());
             }
 
             // If --forward was requested, start the background port forward

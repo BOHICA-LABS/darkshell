@@ -1081,8 +1081,11 @@ enum SandboxCommands {
         /// working directory (`/sandbox`).
         /// `.gitignore` rules are applied by default; use `--no-git-ignore` to
         /// upload everything.
+        ///
+        /// Multiple `--upload` flags are supported; each is processed in
+        /// declaration order.
         #[arg(long, value_hint = ValueHint::AnyPath, help_heading = "UPLOAD FLAGS")]
-        upload: Option<String>,
+        upload: Vec<String>,
 
         /// Disable `.gitignore` filtering for `--upload`.
         #[arg(long, requires = "upload", help_heading = "UPLOAD FLAGS")]
@@ -2114,11 +2117,20 @@ async fn main() -> Result<()> {
                         None // prompt or auto-detect
                     };
 
-                    // Parse --upload spec into (local_path, sandbox_path, git_ignore).
-                    let upload_spec = upload.as_deref().map(|s| {
-                        let (local, remote) = parse_upload_spec(s);
-                        (local, remote, !no_git_ignore)
-                    });
+                    // Validate and parse --upload specs into Vec<(local_path, sandbox_path, git_ignore)>.
+                    for spec in &upload {
+                        validate_upload_spec(spec)?;
+                    }
+                    let upload_specs: Vec<(String, Option<String>, bool)> = upload
+                        .iter()
+                        .map(|s| {
+                            let (local, remote) = parse_upload_spec(s);
+                            (local, remote, !no_git_ignore)
+                        })
+                        .collect();
+
+                    // Warn if two --upload specs target the same sandbox directory.
+                    warn_duplicate_upload_destinations(&upload_specs);
 
                     let editor = editor.map(Into::into);
                     let forward = forward
@@ -2151,7 +2163,7 @@ async fn main() -> Result<()> {
                                 name.as_deref(),
                                 from.as_deref(),
                                 &ctx.name,
-                                upload_spec.as_ref(),
+                                &upload_specs,
                                 keep,
                                 gpu,
                                 editor,
@@ -2173,7 +2185,7 @@ async fn main() -> Result<()> {
                             Box::pin(run::sandbox_create_with_bootstrap(
                                 name.as_deref(),
                                 from.as_deref(),
-                                upload_spec.as_ref(),
+                                &upload_specs,
                                 keep,
                                 gpu,
                                 editor,
@@ -2496,6 +2508,36 @@ fn parse_upload_spec(spec: &str) -> (String, Option<String>) {
         )
     } else {
         (spec.to_string(), None)
+    }
+}
+
+/// Validate an upload spec, returning an error if the local path is empty.
+fn validate_upload_spec(spec: &str) -> Result<()> {
+    let (local, _remote) = parse_upload_spec(spec);
+    if local.is_empty() {
+        return Err(miette::miette!(
+            "Invalid upload spec '{spec}': local path is empty"
+        ));
+    }
+    Ok(())
+}
+
+/// Warn when multiple `--upload` specs target the same sandbox directory.
+fn warn_duplicate_upload_destinations(specs: &[(String, Option<String>, bool)]) {
+    use std::collections::HashMap;
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for (local, remote, _) in specs {
+        let dest = remote.as_deref().unwrap_or("/sandbox");
+        if let Some(prev_local) = seen.get(dest) {
+            eprintln!(
+                "{} Multiple uploads target '{}'. Last upload ('{}') will overwrite previous contents from '{}'.",
+                "!".yellow(),
+                dest,
+                local,
+                prev_local,
+            );
+        }
+        seen.insert(dest, local);
     }
 }
 
@@ -2891,6 +2933,174 @@ mod tests {
         let (local, remote) = parse_upload_spec("./src:");
         assert_eq!(local, "./src");
         assert_eq!(remote, None);
+    }
+
+    // ---------------------------------------------------------------
+    // DS-003: Multiple --upload support
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn multiple_upload_flags_accepted() {
+        // AC-001: Multiple --upload flags accepted on sandbox create.
+        let cli = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "create",
+            "--name",
+            "dev",
+            "--from",
+            "image:tag",
+            "--upload",
+            "src:/sandbox/src",
+            "--upload",
+            "config:/sandbox/config",
+        ])
+        .expect("should parse multiple --upload flags");
+        match cli.command {
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Create { upload, .. }),
+            }) => {
+                assert_eq!(upload.len(), 2);
+                assert_eq!(upload[0], "src:/sandbox/src");
+                assert_eq!(upload[1], "config:/sandbox/config");
+            }
+            other => panic!("expected sandbox create, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uploads_process_in_declaration_order() {
+        // AC-002: Upload specs preserve declaration order in the Vec.
+        let cli = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "create",
+            "--name",
+            "dev",
+            "--from",
+            "image:tag",
+            "--upload",
+            "a:/first",
+            "--upload",
+            "b:/second",
+            "--upload",
+            "c:/third",
+        ])
+        .expect("should parse three --upload flags");
+        match cli.command {
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Create { upload, .. }),
+            }) => {
+                assert_eq!(upload, vec!["a:/first", "b:/second", "c:/third"]);
+            }
+            other => panic!("expected sandbox create, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_upload_backward_compatible() {
+        // AC-003: Single --upload remains backward compatible.
+        let cli = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "create",
+            "--name",
+            "dev",
+            "--from",
+            "image:tag",
+            "--upload",
+            "src:/sandbox",
+        ])
+        .expect("should parse single --upload flag");
+        match cli.command {
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Create { upload, .. }),
+            }) => {
+                assert_eq!(upload.len(), 1);
+                assert_eq!(upload[0], "src:/sandbox");
+            }
+            other => panic!("expected sandbox create, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_without_upload() {
+        // AC-004: No --upload flag still works.
+        let cli = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "create",
+            "--name",
+            "dev",
+            "--from",
+            "image:tag",
+        ])
+        .expect("should parse create without --upload");
+        match cli.command {
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Create { upload, .. }),
+            }) => {
+                assert!(upload.is_empty(), "expected empty upload vec, got: {upload:?}");
+            }
+            other => panic!("expected sandbox create, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_upload_spec_rejects_empty_local_path() {
+        // EC-M02: Upload spec with empty local path is rejected.
+        let result = validate_upload_spec(":/sandbox/dest");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("local path is empty"),
+            "expected 'local path is empty' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_upload_spec_accepts_valid_spec() {
+        assert!(validate_upload_spec("src:/sandbox/src").is_ok());
+        assert!(validate_upload_spec("./src").is_ok());
+        assert!(validate_upload_spec("src:").is_ok());
+    }
+
+    #[test]
+    fn warn_duplicate_upload_destinations_detects_conflict() {
+        // EC-003: Two --upload specs targeting the same sandbox directory.
+        // This function prints to stderr, so we just verify it doesn't panic.
+        let specs = vec![
+            ("a".to_string(), Some("/sandbox".to_string()), true),
+            ("b".to_string(), Some("/sandbox".to_string()), true),
+        ];
+        warn_duplicate_upload_destinations(&specs); // should not panic
+    }
+
+    #[test]
+    fn warn_duplicate_upload_destinations_no_conflict() {
+        let specs = vec![
+            ("a".to_string(), Some("/sandbox/src".to_string()), true),
+            ("b".to_string(), Some("/sandbox/config".to_string()), true),
+        ];
+        warn_duplicate_upload_destinations(&specs); // should not panic
+    }
+
+    #[test]
+    fn warn_duplicate_upload_destinations_default_dest_conflict() {
+        // Two specs both omitting destination default to /sandbox.
+        let specs = vec![
+            ("a".to_string(), None, true),
+            ("b".to_string(), None, true),
+        ];
+        warn_duplicate_upload_destinations(&specs); // should not panic, will print warning
+    }
+
+    #[test]
+    fn upload_spec_missing_colon_uses_default_dest() {
+        // EC-M01: Upload spec missing colon separator uses upstream default.
+        let (local, remote) = parse_upload_spec("src");
+        assert_eq!(local, "src");
+        assert_eq!(remote, None); // None means /sandbox default
     }
 
     #[test]
