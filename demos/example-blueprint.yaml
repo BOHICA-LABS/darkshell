@@ -1,0 +1,28 @@
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: factory-agent
+  description: "DarkClaw factory agent with full tooling"
+spec:
+  image: ghcr.io/bohica-labs/darkshell-factory:latest
+  policy: policies/factory-agent.yaml
+  providers:
+    - github
+    - anthropic
+  mcp_servers:
+    - name: perplexity
+      transport: bridge
+      command: npx -y @anthropic/perplexity-mcp
+      env: [PERPLEXITY_API_KEY]
+    - name: tally
+      transport: in-sandbox
+      command: /opt/mcp-servers/tally
+  forwards:
+    - "8080"
+    - "3000"
+  resources:
+    cpu: "2"
+    memory: 4Gi
+  upload:
+    - "./src:/sandbox/workspace"
+    - "./configs:/sandbox/configs"

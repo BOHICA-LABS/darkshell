@@ -14,6 +14,8 @@ sandbox creation — without changing OpenShell's kernel-enforced security model
 > Landlock, seccomp, network namespaces, OPA policy, and SSRF protection are
 > inherited unchanged from upstream.
 
+![DarkShell Demo](demos/darkshell-overview.gif)
+
 ## What DarkShell Adds
 
 | Feature | OpenShell | DarkShell |
