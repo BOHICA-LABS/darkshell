@@ -3,6 +3,10 @@
 
 //! SSH connection and proxy utilities.
 
+use crate::progress::{
+    CountingReader, CountingWriter, TransferDirection, TransferProgress, calculate_files_size,
+    calculate_local_size, stderr_is_tty,
+};
 use crate::tls::{TlsOptions, build_rustls_config, grpc_client, require_tls_materials};
 use miette::{IntoDiagnostic, Result, WrapErr};
 #[cfg(unix)]
