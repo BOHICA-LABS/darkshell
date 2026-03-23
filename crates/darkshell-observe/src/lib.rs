@@ -24,6 +24,7 @@
 pub mod error;
 pub mod event;
 pub mod filter;
+pub mod inference_log;
 pub mod parser;
 pub mod watch;
 
@@ -34,4 +35,5 @@ pub use event::{
     PolicyEvent, WatchEvent, WatchMetaEvent,
 };
 pub use filter::EventFilter;
+pub use inference_log::{InferenceEvent, RedactionConfig, redact_inference_event};
 pub use watch::{EventStream, WatchConfig};

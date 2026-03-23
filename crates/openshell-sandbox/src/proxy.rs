@@ -23,6 +23,40 @@ use tracing::{debug, info, warn};
 const MAX_HEADER_BYTES: usize = 8192;
 const INFERENCE_LOCAL_HOST: &str = "inference.local";
 
+// BEGIN DARKSHELL HOOK — DS-020 inference logging (ADR-011)
+#[cfg(feature = "darkshell-inference-log")]
+mod inference_hook {
+    use std::sync::OnceLock;
+    use tokio::sync::mpsc;
+
+    static INFERENCE_TX: OnceLock<mpsc::Sender<darkshell_observe::InferenceEvent>> =
+        OnceLock::new();
+
+    /// Initialize the inference event channel. Call once at startup.
+    /// Returns the receiving end for the observer to consume.
+    pub fn init_inference_channel(
+        capacity: usize,
+    ) -> mpsc::Receiver<darkshell_observe::InferenceEvent> {
+        let (tx, rx) = mpsc::channel(capacity);
+        let _ = INFERENCE_TX.set(tx);
+        rx
+    }
+
+    /// Try to send an inference event. Never blocks (uses try_send).
+    /// If the channel is full or uninitialized, the event is dropped.
+    pub fn try_send_inference_event(event: darkshell_observe::InferenceEvent) {
+        if let Some(tx) = INFERENCE_TX.get() {
+            if tx.try_send(event).is_err() {
+                darkshell_observe::inference_log::record_dropped_event();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "darkshell-inference-log")]
+pub use inference_hook::init_inference_channel;
+// END DARKSHELL HOOK
+
 /// Result of a proxy CONNECT policy decision.
 struct ConnectDecision {
     action: NetworkAction,
@@ -958,6 +992,13 @@ async fn route_inference_request(
             return Ok(true);
         }
 
+        // BEGIN DARKSHELL HOOK — DS-020 inference logging (ADR-011)
+        #[cfg(feature = "darkshell-inference-log")]
+        let hook_start = std::time::Instant::now();
+        #[cfg(feature = "darkshell-inference-log")]
+        let hook_request_body = String::from_utf8_lossy(&request.body).into_owned();
+        // END DARKSHELL HOOK
+
         match ctx
             .router
             .proxy_with_candidates_streaming(
@@ -975,6 +1016,13 @@ async fn route_inference_request(
                     format_chunk, format_chunk_terminator, format_http_response_header,
                 };
 
+                // BEGIN DARKSHELL HOOK — DS-020 capture response metadata
+                #[cfg(feature = "darkshell-inference-log")]
+                let hook_status_code = resp.status;
+                #[cfg(feature = "darkshell-inference-log")]
+                let mut hook_response_chunks: Vec<bytes::Bytes> = Vec::new();
+                // END DARKSHELL HOOK
+
                 let resp_headers = sanitize_inference_response_headers(
                     std::mem::take(&mut resp.headers).into_iter().collect(),
                 );
@@ -987,6 +1035,16 @@ async fn route_inference_request(
                 loop {
                     match resp.next_chunk().await {
                         Ok(Some(chunk)) => {
+                            // BEGIN DARKSHELL HOOK — DS-020 capture response body
+                            #[cfg(feature = "darkshell-inference-log")]
+                            {
+                                let total: usize = hook_response_chunks.iter().map(|c| c.len()).sum();
+                                if total < darkshell_observe::inference_log::MAX_RESPONSE_BYTES {
+                                    hook_response_chunks.push(chunk.clone());
+                                }
+                            }
+                            // END DARKSHELL HOOK
+
                             let encoded = format_chunk(&chunk);
                             write_all(tls_client, &encoded).await?;
                         }
@@ -1000,6 +1058,39 @@ async fn route_inference_request(
 
                 // Terminate the chunked stream.
                 write_all(tls_client, format_chunk_terminator()).await?;
+
+                // BEGIN DARKSHELL HOOK — DS-020 emit inference event
+                #[cfg(feature = "darkshell-inference-log")]
+                {
+                    let total_resp_bytes: usize =
+                        hook_response_chunks.iter().map(|c| c.len()).sum();
+                    let truncated =
+                        total_resp_bytes >= darkshell_observe::inference_log::MAX_RESPONSE_BYTES;
+                    let response_body: Vec<u8> =
+                        hook_response_chunks.into_iter().flat_map(|c| c.to_vec()).collect();
+                    let response_str = String::from_utf8_lossy(&response_body).into_owned();
+
+                    // Try to extract model from response JSON (common OpenAI-style format)
+                    let (model, prompt_tokens, completion_tokens) =
+                        extract_inference_metadata(&response_str);
+
+                    let event = darkshell_observe::InferenceEvent {
+                        request_id: uuid_ds::Uuid::new_v4().to_string(),
+                        timestamp: chrono_ds::Utc::now(),
+                        model_provider: pattern.protocol.clone(),
+                        model: model.unwrap_or_else(|| "unknown".to_owned()),
+                        prompt: hook_request_body,
+                        response: response_str,
+                        prompt_tokens,
+                        completion_tokens,
+                        latency_ms: hook_start.elapsed().as_millis() as u64,
+                        status_code: hook_status_code,
+                        error: false,
+                        truncated,
+                    };
+                    inference_hook::try_send_inference_event(event);
+                }
+                // END DARKSHELL HOOK
             }
             Err(e) => {
                 warn!(error = %e, "inference endpoint detected but upstream service failed");
@@ -1012,6 +1103,27 @@ async fn route_inference_request(
                     body_bytes.as_bytes(),
                 );
                 write_all(tls_client, &response).await?;
+
+                // BEGIN DARKSHELL HOOK — DS-020 emit error inference event (EC-I03)
+                #[cfg(feature = "darkshell-inference-log")]
+                {
+                    let event = darkshell_observe::InferenceEvent {
+                        request_id: uuid_ds::Uuid::new_v4().to_string(),
+                        timestamp: chrono_ds::Utc::now(),
+                        model_provider: pattern.protocol.clone(),
+                        model: "unknown".to_owned(),
+                        prompt: hook_request_body,
+                        response: String::new(),
+                        prompt_tokens: None,
+                        completion_tokens: None,
+                        latency_ms: hook_start.elapsed().as_millis() as u64,
+                        status_code: status,
+                        error: true,
+                        truncated: false,
+                    };
+                    inference_hook::try_send_inference_event(event);
+                }
+                // END DARKSHELL HOOK
             }
         }
         Ok(true)
@@ -1033,6 +1145,31 @@ async fn route_inference_request(
         Ok(false)
     }
 }
+
+// BEGIN DARKSHELL HOOK — DS-020 metadata extraction helper
+#[cfg(feature = "darkshell-inference-log")]
+fn extract_inference_metadata(
+    response_body: &str,
+) -> (Option<String>, Option<u64>, Option<u64>) {
+    // Best-effort extraction from OpenAI-compatible response format.
+    // Returns (model, prompt_tokens, completion_tokens).
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(response_body) else {
+        return (None, None, None);
+    };
+
+    let model = json.get("model").and_then(|v| v.as_str()).map(String::from);
+    let prompt_tokens = json
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64());
+    let completion_tokens = json
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64());
+
+    (model, prompt_tokens, completion_tokens)
+}
+// END DARKSHELL HOOK
 
 fn router_error_to_http(err: &openshell_router::RouterError) -> (u16, String) {
     use openshell_router::RouterError;

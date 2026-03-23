@@ -75,6 +75,31 @@ landlock = "0.4"
 seccompiler = "0.5"
 uuid = { version = "1", features = ["v4"] }
 
+[features]
+# DarkShell inference logging hook (DS-020, ADR-011).
+# When enabled, proxy.rs emits InferenceEvent structs to a channel
+# for the darkshell-observe crate to consume.
+# When disabled (default), the hook compiles to nothing.
+darkshell-inference-log = ["dep:darkshell-observe", "dep:chrono-ds", "dep:uuid-ds"]
+
+[dependencies.darkshell-observe]
+path = "../darkshell-observe"
+optional = true
+
+# DS-020: Optional deps only used when darkshell-inference-log feature is enabled.
+# Renamed to avoid conflict with existing uuid dep in Linux-only section.
+[dependencies.chrono-ds]
+package = "chrono"
+version = "0.4"
+features = ["serde"]
+optional = true
+
+[dependencies.uuid-ds]
+package = "uuid"
+version = "1"
+features = ["v4"]
+optional = true
+
 [dev-dependencies]
 tempfile = "3"
 temp-env = "0.3"

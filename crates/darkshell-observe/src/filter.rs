@@ -15,6 +15,7 @@ pub const VALID_EVENT_TYPES: &[&str] = &[
     "policy",
     "mcp",
     "lifecycle",
+    "inference",
     "watch",
 ];
 

@@ -27,6 +27,10 @@ thiserror = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Inference log redaction (DS-020)
+sha2 = "0.10"
+regex = "1"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 

@@ -59,6 +59,10 @@ pub enum EventPayload {
     #[serde(rename = "sandbox_state_change")]
     SandboxStateChange(LifecycleEvent),
 
+    /// An inference request/response was captured by the proxy hook (DS-020).
+    #[serde(rename = "inference")]
+    Inference(crate::inference_log::InferenceEvent),
+
     /// Internal watch metadata event (overflow, parse errors).
     #[serde(rename = "watch_meta")]
     WatchMeta(WatchMetaEvent),
@@ -176,6 +180,7 @@ impl WatchEvent {
             EventPayload::PolicyDecision(_) => "policy",
             EventPayload::McpToolCall(_) => "mcp",
             EventPayload::SandboxStateChange(_) => "lifecycle",
+            EventPayload::Inference(_) => "inference",
             EventPayload::WatchMeta(_) => "watch",
         };
 
@@ -241,6 +246,13 @@ impl WatchEvent {
                 let prev = e.previous_phase.as_deref().unwrap_or("none");
                 format!("{} -> {}", prev, e.phase)
             }
+            EventPayload::Inference(e) => {
+                let status = if e.error { "error" } else { "ok" };
+                format!(
+                    "{}/{} [{}] {}ms",
+                    e.model_provider, e.model, status, e.latency_ms
+                )
+            }
             EventPayload::WatchMeta(e) => e.message.clone(),
         };
 
@@ -251,8 +263,9 @@ impl WatchEvent {
                 "network" => "\x1b[35m",  // magenta
                 "policy" => "\x1b[31m",   // red
                 "mcp" => "\x1b[34m",      // blue
-                "lifecycle" => "\x1b[32m", // green
-                _ => "\x1b[37m",          // white
+                "lifecycle" => "\x1b[32m",  // green
+                "inference" => "\x1b[93m", // bright yellow
+                _ => "\x1b[37m",           // white
             };
             format!(
                 "\x1b[2m{ts}\x1b[0m {type_color}{type_label:<10}\x1b[0m {detail}"
