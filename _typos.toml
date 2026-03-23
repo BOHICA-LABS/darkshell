@@ -11,6 +11,8 @@ extend-exclude = [
     "architecture/",
     # Upstream third-party notices contain Dutch legal text
     "THIRD-PARTY-NOTICES",
+    # Generated changelog from upstream commit messages (may contain typos)
+    "CHANGELOG.md",
 ]
 
 [default.extend-words]
