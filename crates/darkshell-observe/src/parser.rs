@@ -69,8 +69,8 @@ fn try_parse_policy_decision(sandbox: &str, line: &str) -> Option<WatchEvent> {
     // Split on " -> " to get action/endpoint and result
     let (left, right) = rest.split_once(" -> ")?;
     let parts: Vec<&str> = left.trim().splitn(2, ' ').collect();
-    let action = parts.first()?.to_owned().to_owned();
-    let endpoint = parts.get(1).map(|s| s.to_owned().to_owned());
+    let action = (*parts.first()?).to_string();
+    let endpoint = parts.get(1).map(ToString::to_string);
 
     // Check for rule match after result
     let (result, rule_matched) = if let Some((r, rule_part)) = right.split_once(" [rule: ") {

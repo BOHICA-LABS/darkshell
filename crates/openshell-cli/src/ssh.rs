@@ -617,6 +617,11 @@ pub async fn sandbox_sync_up(
 
 /// Global cache of rsync availability per sandbox name.
 /// Avoids re-checking `which rsync` on every upload for the same sandbox.
+///
+/// This cache is per-CLI-process and suitable for single-command invocations
+/// (the common case). For long-lived processes, the cache may become stale if
+/// rsync is installed or removed inside the sandbox after the first probe.
+/// A CLI restart or calling `clear_rsync_cache()` will refresh.
 static RSYNC_AVAILABLE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, bool>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -1574,10 +1579,16 @@ pub async fn sandbox_exec_captured(
 /// Known credential environment variable prefixes that must NOT be forwarded
 /// into the sandbox. In-sandbox MCP servers operate on the local filesystem
 /// only — they should never receive host-side API keys or tokens.
+///
+/// This is a best-effort blocklist. It cannot catch all possible credential
+/// variable names, but covers common providers and conventions. Operators
+/// should use explicit allowlists for production deployments.
 const CREDENTIAL_ENV_PREFIXES: &[&str] = &[
     "API_KEY",
     "SECRET",
     "TOKEN",
+    "PASSWORD",
+    "AUTH_",
     "AWS_",
     "AZURE_",
     "GCP_",
@@ -1585,6 +1596,16 @@ const CREDENTIAL_ENV_PREFIXES: &[&str] = &[
     "OPENAI_",
     "ANTHROPIC_",
     "HF_",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "STRIPE_",
+    "TWILIO_",
+    "SENDGRID_",
+    "SLACK_",
+    "NPM_TOKEN",
+    "PYPI_TOKEN",
+    "CARGO_REGISTRY_TOKEN",
+    "DOCKER_",
 ];
 
 /// Check whether an environment variable name looks like a credential.

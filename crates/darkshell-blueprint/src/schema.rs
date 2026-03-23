@@ -657,20 +657,19 @@ fn validate_forwards(
         };
 
         // BP-M003: validate bind address format if present.
-        if let Some(addr) = bind_addr {
-            if !addr.is_empty()
-                && addr.parse::<std::net::Ipv4Addr>().is_err()
-                && addr.parse::<std::net::Ipv6Addr>().is_err()
-                && addr != "localhost"
-            {
-                warnings.push(ValidationWarning {
-                    field: field.clone(),
-                    message: format!(
-                        "Bind address '{addr}' does not appear to be a valid IP address \
-                         or 'localhost'. Got: '{spec}'."
-                    ),
-                });
-            }
+        if let Some(addr) = bind_addr
+            && !addr.is_empty()
+            && addr.parse::<std::net::Ipv4Addr>().is_err()
+            && addr.parse::<std::net::Ipv6Addr>().is_err()
+            && addr != "localhost"
+        {
+            warnings.push(ValidationWarning {
+                field: field.clone(),
+                message: format!(
+                    "Bind address '{addr}' does not appear to be a valid IP address \
+                     or 'localhost'. Got: '{spec}'."
+                ),
+            });
         }
 
         // BP-M003: parse as u16 directly instead of u32.
@@ -1774,13 +1773,8 @@ spec:
         let bp = parse_blueprint(yaml).expect("should parse");
         let result = validate(&bp);
 
-        let cmd_errors: Vec<_> = result
-            .errors
-            .iter()
-            .filter(|e| e.field.contains(".command"))
-            .collect();
         assert!(
-            !cmd_errors.is_empty(),
+            result.errors.iter().any(|e| e.field.contains(".command")),
             "in-sandbox transport without command should produce an error"
         );
     }
@@ -1815,19 +1809,15 @@ d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
         // blueprint, but parseable YAML) or fail with a parse/size error.
         // The key assertion is that it does NOT panic or OOM.
         let result = parse_blueprint(bomb);
-        match result {
-            Ok(bp) => {
-                // Parsed but won't validate — that's fine
-                let validation = validate(&bp);
-                assert!(
-                    !validation.errors.is_empty(),
-                    "anchor bomb should not produce a valid blueprint"
-                );
-            }
-            Err(_) => {
-                // Rejected at parse level — also fine
-            }
+        if let Ok(bp) = result {
+            // Parsed but won't validate — that's fine
+            let validation = validate(&bp);
+            assert!(
+                !validation.errors.is_empty(),
+                "anchor bomb should not produce a valid blueprint"
+            );
         }
+        // If Err, rejected at parse level — also fine
     }
 
     // -----------------------------------------------------------------------

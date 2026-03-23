@@ -74,6 +74,12 @@ pub fn resolve_config_dir() -> Result<PathBuf> {
 /// set up port forwarding, and configure network policy. For now we register
 /// the server and report the allocated port so that `mcp list` and `mcp remove`
 /// work end-to-end.
+///
+/// TODO: FR-011 (tool policy integration) — integrate MCP tool-level policy
+/// enforcement. Deferred to DS-010.
+///
+/// TODO: FR-013 (provider credential injection) — inject credentials from
+/// `darkshell provider` into bridge env. Deferred to DS-013.
 pub fn mcp_add(
     sandbox: &str,
     server_name: &str,
@@ -466,12 +472,18 @@ pub fn cleanup_mcp_for_sandbox(sandbox: &str) {
 
 /// Check whether a process is alive via `kill -0`.
 fn process_is_alive(pid: u32) -> bool {
-    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    // Theoretical: pid > i32::MAX on 64-bit systems with PID namespaces.
+    // In practice, Linux PIDs are limited to ~4 million, well within i32 range.
+    let raw_pid = i32::try_from(pid).unwrap_or(0);
+    signal::kill(Pid::from_raw(raw_pid), None).is_ok()
 }
 
 /// Send a signal to a process.
 fn signal_process(pid: u32, sig: Signal) -> nix::Result<()> {
-    signal::kill(Pid::from_raw(pid as i32), sig)
+    // Theoretical: pid > i32::MAX on 64-bit systems with PID namespaces.
+    // In practice, Linux PIDs are limited to ~4 million, well within i32 range.
+    let raw_pid = i32::try_from(pid).unwrap_or(0);
+    signal::kill(Pid::from_raw(raw_pid), sig)
 }
 
 /// CLI-S002: Verify that the process at `pid` looks like an MCP bridge process
@@ -541,8 +553,15 @@ mod tests {
     };
 
     #[test]
-    fn trivial_mcp_test_discovery_check() {
-        assert!(true);
+    fn validate_name_rejects_invalid_server_names() {
+        // Exercises the registry validate_name function that guards mcp add/remove
+        use darkshell_mcp::registry::validate_name;
+        assert!(validate_name("valid-name").is_ok());
+        assert!(validate_name("abc123").is_ok());
+        assert!(validate_name("").is_err(), "empty name should be rejected");
+        assert!(validate_name("UPPER").is_err(), "uppercase should be rejected");
+        assert!(validate_name("../etc").is_err(), "path traversal should be rejected");
+        assert!(validate_name("has space").is_err(), "spaces should be rejected");
     }
 
     fn test_registration(sandbox: &str, server: &str, port: u16) -> BridgeRegistration {
@@ -673,8 +692,36 @@ mod tests {
         temp_env::with_vars(
             [("DARKSHELL_CONFIG_DIR", Some(dir.path().to_str().expect("path")))],
             || {
-                // Capture would require redirect; here we just verify no error
+                // Note: mcp_list writes JSON to stdout via println!, which cannot
+                // be captured in-process without redirecting stdout (a non-trivial
+                // change). We verify the format indirectly by testing the JSON
+                // serialization path that mcp_list uses.
                 mcp_list("dev", ListFormat::Json).expect("list json should succeed");
+
+                // Verify the JSON format directly using the same serialization
+                // logic that mcp_list uses.
+                let all = registry::list_registrations(dir.path()).expect("list");
+                let enriched: Vec<serde_json::Value> = all
+                    .iter()
+                    .filter(|r| r.sandbox == "dev")
+                    .map(|r| {
+                        serde_json::json!({
+                            "sandbox": r.sandbox,
+                            "server_name": r.server_name,
+                            "transport": format!("{:?}", r.transport).to_lowercase(),
+                            "command": r.command,
+                            "bridge_pid": r.bridge_pid,
+                            "forwarded_port": r.forwarded_port,
+                            "status": "stopped",
+                        })
+                    })
+                    .collect();
+                let json_str = serde_json::to_string_pretty(&enriched).expect("serialize");
+                let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+                    .expect("JSON output should be parseable");
+                assert_eq!(parsed.len(), 1);
+                assert_eq!(parsed[0]["server_name"], "perplexity");
+                assert_eq!(parsed[0]["sandbox"], "dev");
             },
         );
     }

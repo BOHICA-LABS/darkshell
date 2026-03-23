@@ -282,6 +282,7 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                     reason: format!("mcp_servers['{name}'].transport is required"),
                 })?;
 
+            #[allow(unreachable_patterns)]
             match transport {
                 McpTransport::Bridge => {
                     bridge_servers.push(McpBridgePlan {
@@ -317,6 +318,13 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                                 reason: "streamable-http MCP server requires a 'url' field".to_string(),
                             })?,
                     });
+                }
+                _ => {
+                    tracing::warn!(
+                        server = %name,
+                        transport = %transport,
+                        "unknown MCP transport type, skipping"
+                    );
                 }
             }
         }

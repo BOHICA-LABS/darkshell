@@ -243,7 +243,7 @@ pub fn sandbox_deleted_event(sandbox: &str, previous_phase: Option<&str>) -> Wat
         sandbox,
         EventPayload::SandboxStateChange(LifecycleEvent {
             phase: "deleted".to_owned(),
-            previous_phase: previous_phase.map(|s| s.to_owned()),
+            previous_phase: previous_phase.map(ToOwned::to_owned),
         }),
     )
 }
@@ -489,5 +489,25 @@ mod tests {
         // Send more to see the count increase
         stream.try_send(event);
         assert_eq!(stream.dropped_count, 2);
+    }
+
+    #[test]
+    fn watch_config_builder_with_tty_sets_field() {
+        let config = WatchConfig::new("sb").with_tty(true);
+        assert!(config.is_tty);
+        assert_eq!(config.sandbox, "sb");
+        // Defaults should be preserved
+        assert!(!config.json);
+        assert_eq!(config.channel_capacity, DEFAULT_CHANNEL_CAPACITY);
+    }
+
+    #[test]
+    fn watch_config_builder_with_json_sets_field() {
+        let config = WatchConfig::new("sb").with_json(true);
+        assert!(config.json);
+        assert_eq!(config.sandbox, "sb");
+        // Defaults should be preserved
+        assert!(!config.is_tty);
+        assert_eq!(config.channel_capacity, DEFAULT_CHANNEL_CAPACITY);
     }
 }

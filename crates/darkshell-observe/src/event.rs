@@ -27,7 +27,7 @@ pub struct WatchEvent {
     payload: EventPayload,
 }
 
-/// Helper struct for WatchEvent serialization that includes event_type in JSON.
+/// Helper struct for `WatchEvent` serialization that includes `event_type` in JSON.
 #[derive(Serialize)]
 struct WatchEventSer<'a> {
     timestamp: &'a DateTime<Utc>,
@@ -37,7 +37,7 @@ struct WatchEventSer<'a> {
     payload: &'a EventPayload,
 }
 
-/// Helper struct for WatchEvent deserialization.
+/// Helper struct for `WatchEvent` deserialization.
 #[derive(Deserialize)]
 struct WatchEventDe {
     timestamp: DateTime<Utc>,

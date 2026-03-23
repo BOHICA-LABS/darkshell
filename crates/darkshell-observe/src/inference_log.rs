@@ -44,7 +44,7 @@ pub struct InferenceEvent {
     pub request_id: String,
 
     /// When the inference request was initiated (UTC).
-    /// Serialized as `inference_timestamp` to avoid conflict with WatchEvent's
+    /// Serialized as `inference_timestamp` to avoid conflict with `WatchEvent`'s
     /// `timestamp` field when the payload is flattened.
     #[serde(rename = "inference_timestamp")]
     pub timestamp: DateTime<Utc>,
@@ -84,7 +84,7 @@ pub struct InferenceEvent {
 ///
 /// Redaction is applied in order: PII strip -> field hash -> truncation.
 /// Default is no redaction (operator must opt in per AC-005).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RedactionConfig {
     /// Whether to strip PII patterns (emails, phone numbers, SSNs, etc.)
     /// from prompt and response content.
@@ -99,16 +99,6 @@ pub struct RedactionConfig {
     /// Content beyond this limit is truncated with a "[TRUNCATED]" marker.
     #[serde(default)]
     pub truncate_chars: Option<usize>,
-}
-
-impl Default for RedactionConfig {
-    fn default() -> Self {
-        Self {
-            strip_pii: false,
-            hash_fields: Vec::new(),
-            truncate_chars: None,
-        }
-    }
 }
 
 impl RedactionConfig {
@@ -126,9 +116,8 @@ impl RedactionConfig {
         for field in &self.hash_fields {
             if !VALID_FIELDS.contains(&field.as_str()) {
                 warnings.push(format!(
-                    "Redaction field '{}' is not a valid InferenceEvent field. \
-                     Valid fields: prompt, response, model, provider.",
-                    field
+                    "Redaction field '{field}' is not a valid InferenceEvent field. \
+                     Valid fields: prompt, response, model, provider."
                 ));
             }
         }
@@ -179,6 +168,10 @@ pub fn redact_inference_event(event: &InferenceEvent, config: &RedactionConfig) 
 /// - US Social Security Numbers
 /// - Credit card numbers (basic pattern)
 fn strip_pii(text: &str) -> String {
+    // Regex application order: email → phone → SSN → credit card.
+    // This order is safe because replacement tokens (e.g., "[EMAIL_REDACTED]")
+    // contain no digits or '@' characters, so they cannot match subsequent
+    // regex patterns. Each pass is idempotent with respect to prior replacements.
     // Uses pre-compiled LazyLock regexes (OBS-F002).
     let result = EMAIL_RE.replace_all(text, "[EMAIL_REDACTED]");
     let result = PHONE_RE.replace_all(&result, "[PHONE_REDACTED]");
@@ -606,14 +599,14 @@ mod tests {
     }
 
     #[test]
-    fn test_redaction_config_yaml_round_trip() {
+    fn test_redaction_config_json_round_trip() {
         let config = RedactionConfig {
             strip_pii: true,
             hash_fields: vec!["prompt".to_owned()],
             truncate_chars: Some(500),
         };
-        let yaml = serde_json::to_string(&config).expect("serialize");
-        let deserialized: RedactionConfig = serde_json::from_str(&yaml).expect("deserialize");
+        let json = serde_json::to_string(&config).expect("serialize");
+        let deserialized: RedactionConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(config, deserialized);
     }
 }
