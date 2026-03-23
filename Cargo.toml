@@ -86,7 +86,7 @@ futures = "0.3"
 bytes = "1"
 pin-project-lite = "0.2"
 tokio-stream = "0.1"
-protobuf-src = "1.1.0"
+protobuf-src = "2.1.1"
 url = "2"
 
 # Database
