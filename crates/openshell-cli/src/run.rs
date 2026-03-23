@@ -47,8 +47,9 @@ use tonic::{Code, Status};
 // Re-export SSH functions for backward compatibility
 pub use crate::ssh::{Editor, print_ssh_config};
 pub use crate::ssh::{
-    sandbox_connect, sandbox_connect_editor, sandbox_exec, sandbox_forward, sandbox_ssh_proxy,
-    sandbox_ssh_proxy_by_name, sandbox_sync_down, sandbox_sync_up, sandbox_sync_up_files,
+    sandbox_connect, sandbox_connect_editor, sandbox_exec, sandbox_exec_captured,
+    sandbox_forward, sandbox_ssh_proxy, sandbox_ssh_proxy_by_name, sandbox_sync_down,
+    sandbox_sync_up, sandbox_sync_up_files,
 };
 pub use openshell_core::forward::{
     find_forward_by_port, list_forwards, stop_forward, stop_forwards_for_sandbox,
@@ -2842,6 +2843,9 @@ pub async fn sandbox_delete(
             println!("{} Sandbox {name} not found", "!".yellow());
         }
     }
+
+    // Best-effort cleanup of SSH ControlMaster sockets.
+    crate::ssh::cleanup_control_sockets();
 
     Ok(())
 }

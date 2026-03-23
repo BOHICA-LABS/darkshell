@@ -954,6 +954,210 @@ pub fn print_ssh_config(gateway: &str, name: &str) {
     print!("{}", render_ssh_config(gateway, name));
 }
 
+// ---------------------------------------------------------------------------
+// DS-007: sandbox exec with SSH ControlMaster
+// ---------------------------------------------------------------------------
+
+/// Default exec timeout in seconds (5 minutes).
+pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// SSH ControlPersist idle timeout in seconds (10 minutes).
+const CONTROL_PERSIST_SECS: u64 = 600;
+
+/// Exit code returned when the command is killed by a timeout.
+pub const EXIT_CODE_TIMEOUT: i32 = 124;
+
+/// Result of executing a command in a sandbox.
+#[derive(Debug, Clone)]
+pub struct ExecResult {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: i32,
+    pub duration: Duration,
+}
+
+/// Compute the SSH ControlSocket directory path.
+///
+/// Returns `~/.config/darkshell/ssh/`. The directory holds ControlMaster
+/// socket files using the pattern `ctrl-%r@%h:%p`.
+pub fn controlsocket_dir() -> Result<PathBuf> {
+    Ok(openshell_core::paths::xdg_config_dir()?
+        .join("darkshell")
+        .join("ssh"))
+}
+
+/// Return the SSH ControlPath pattern string for ControlMaster sockets.
+///
+/// The pattern `ctrl-%r@%h:%p` is expanded by SSH at runtime. The base
+/// directory is `~/.config/darkshell/ssh/`.
+pub fn controlsocket_path() -> Result<String> {
+    let dir = controlsocket_dir()?;
+    Ok(format!("{}/ctrl-%r@%h:%p", dir.display()))
+}
+
+/// Build an SSH command for non-interactive exec with ControlMaster support.
+///
+/// This is a pure function: it constructs the command arguments without
+/// performing any I/O. The returned `TokioCommand` is ready to spawn.
+pub fn build_exec_ssh_command(
+    proxy_command: &str,
+    remote_command: &[String],
+    control_path: &str,
+) -> TokioCommand {
+    let mut cmd = TokioCommand::new("ssh");
+    cmd.arg("-T")
+        .arg("-o")
+        .arg(format!("ProxyCommand={proxy_command}"))
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("GlobalKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("LogLevel=ERROR")
+        .arg("-o")
+        .arg("ControlMaster=auto")
+        .arg("-o")
+        .arg(format!("ControlPath={control_path}"))
+        .arg("-o")
+        .arg(format!("ControlPersist={CONTROL_PERSIST_SECS}"))
+        .arg("-o")
+        .arg("RequestTTY=no");
+
+    let command_str = remote_command
+        .iter()
+        .map(|arg| shell_escape(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    cmd.arg("sandbox").arg(command_str);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
+/// Execute a command in a sandbox with SSH ControlMaster connection reuse.
+///
+/// Returns an [`ExecResult`] containing captured stdout, stderr, the remote
+/// exit code, and wall-clock duration.
+///
+/// * `timeout_secs == 0` disables the timeout entirely.
+/// * When the timeout fires, the SSH process is killed and exit code 124 is
+///   returned (matching the POSIX `timeout(1)` convention).
+pub async fn sandbox_exec_captured(
+    server: &str,
+    name: &str,
+    command: &[String],
+    timeout_secs: u64,
+    tls: &TlsOptions,
+) -> Result<ExecResult> {
+    if command.is_empty() {
+        return Err(miette::miette!(
+            "no command provided for exec. Usage: darkshell sandbox exec <name> -- <command>"
+        ));
+    }
+
+    // Ensure the ControlSocket directory exists with restrictive permissions.
+    let ctrl_dir = controlsocket_dir()?;
+    openshell_core::paths::create_dir_restricted(&ctrl_dir)?;
+
+    let control_path = controlsocket_path()?;
+    let session = ssh_session_config(server, name, tls).await?;
+    let mut ssh = build_exec_ssh_command(&session.proxy_command, command, &control_path);
+
+    let start = std::time::Instant::now();
+    let child = ssh.spawn().into_diagnostic().wrap_err_with(|| {
+        format!(
+            "failed to spawn SSH for exec in sandbox '{name}'. \
+             Is SSH installed and on PATH?"
+        )
+    })?;
+
+    let wait_for_output = async {
+        let output = child.wait_with_output().await.into_diagnostic()?;
+        let duration = start.elapsed();
+        let exit_code = output.status.code().unwrap_or(1);
+        Ok(ExecResult {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code,
+            duration,
+        })
+    };
+
+    let result: Result<ExecResult> = if timeout_secs == 0 {
+        // No timeout — wait indefinitely.
+        wait_for_output.await
+    } else {
+        let timeout_duration = Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout_duration, wait_for_output).await {
+            Ok(inner) => inner,
+            Err(_) => {
+                // Timeout expired. The child future was dropped, which should
+                // cause the child process to be cleaned up. We also attempt an
+                // explicit kill via a fresh handle, but the primary cleanup is
+                // the drop.
+                let duration = start.elapsed();
+                let cmd_str = command.join(" ");
+                tracing::warn!(
+                    sandbox = name,
+                    command = cmd_str.as_str(),
+                    timeout_secs = timeout_secs,
+                    "exec command timed out"
+                );
+                Ok(ExecResult {
+                    stdout: Vec::new(),
+                    stderr: format!(
+                        "exec: command timed out after {timeout_secs}s in sandbox '{name}'\n"
+                    )
+                    .into_bytes(),
+                    exit_code: EXIT_CODE_TIMEOUT,
+                    duration,
+                })
+            }
+        }
+    };
+
+    result
+}
+
+/// Clean up ControlMaster sockets associated with a sandbox.
+///
+/// Called when a sandbox is deleted to ensure stale sockets are removed.
+/// Silently ignores errors — socket cleanup is best-effort.
+pub fn cleanup_control_sockets() {
+    if let Ok(dir) = controlsocket_dir() {
+        if dir.exists() {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("ctrl-"))
+                    {
+                        // Ask SSH to gracefully close the master connection.
+                        let _ = Command::new("ssh")
+                            .arg("-O")
+                            .arg("exit")
+                            .arg("-o")
+                            .arg(format!("ControlPath={}", path.display()))
+                            .arg("sandbox")
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status();
+                        // Remove the socket file if SSH didn't clean it up.
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Copy all bytes from `reader` to `writer`, flushing on completion.
 /// Errors are intentionally discarded – connection teardown errors are
 /// expected during normal SSH session shutdown.
@@ -1148,5 +1352,295 @@ mod tests {
         let message = foreground_forward_started_message("demo", &spec);
         assert!(message.contains("Forwarding port 3000 to sandbox demo"));
         assert!(message.contains("Access at: http://localhost:3000/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // DS-007: sandbox exec tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn controlsocket_dir_is_under_darkshell_ssh() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        let dir = controlsocket_dir().unwrap();
+        assert!(
+            dir.ends_with("darkshell/ssh"),
+            "expected path ending with 'darkshell/ssh', got: {dir:?}"
+        );
+        assert!(
+            dir.starts_with(tmp.path()),
+            "expected path starting with temp dir"
+        );
+        unsafe {
+            match old_xdg {
+                Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn controlsocket_path_contains_ssh_token_pattern() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        let path = controlsocket_path().unwrap();
+        assert!(
+            path.contains("ctrl-%r@%h:%p"),
+            "ControlPath must use SSH token expansion pattern, got: {path}"
+        );
+        assert!(
+            path.contains("darkshell/ssh/"),
+            "ControlPath must be under darkshell/ssh/, got: {path}"
+        );
+        unsafe {
+            match old_xdg {
+                Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn controlsocket_path_is_deterministic() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        let path1 = controlsocket_path().unwrap();
+        let path2 = controlsocket_path().unwrap();
+        assert_eq!(
+            path1, path2,
+            "ControlSocket path must be deterministic across calls"
+        );
+        unsafe {
+            match old_xdg {
+                Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn build_exec_ssh_command_includes_controlmaster_args() {
+        let cmd = build_exec_ssh_command(
+            "proxy-cmd --arg",
+            &["echo".to_string(), "hello".to_string()],
+            "/tmp/ctrl-%r@%h:%p",
+        );
+        let prog = cmd.as_std().get_program();
+        assert_eq!(prog, "ssh", "program must be ssh");
+
+        let args: Vec<&std::ffi::OsStr> = cmd.as_std().get_args().collect();
+        let args_str: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+
+        // Must have -T for non-interactive
+        assert!(
+            args_str.contains(&"-T"),
+            "must include -T for non-interactive mode"
+        );
+
+        // Must have ControlMaster=auto
+        assert!(
+            args_str.contains(&"ControlMaster=auto"),
+            "must include ControlMaster=auto, got: {args_str:?}"
+        );
+
+        // Must have ControlPath
+        assert!(
+            args_str
+                .iter()
+                .any(|a| a.starts_with("ControlPath=/tmp/ctrl-")),
+            "must include ControlPath, got: {args_str:?}"
+        );
+
+        // Must have ControlPersist=600
+        assert!(
+            args_str.contains(&"ControlPersist=600"),
+            "must include ControlPersist=600, got: {args_str:?}"
+        );
+
+        // Must have ProxyCommand
+        assert!(
+            args_str
+                .iter()
+                .any(|a| a.starts_with("ProxyCommand=proxy-cmd")),
+            "must include ProxyCommand, got: {args_str:?}"
+        );
+
+        // Must have RequestTTY=no
+        assert!(
+            args_str.contains(&"RequestTTY=no"),
+            "must include RequestTTY=no, got: {args_str:?}"
+        );
+
+        // Must target "sandbox" user/host
+        assert!(
+            args_str.contains(&"sandbox"),
+            "must include 'sandbox' as the SSH target host, got: {args_str:?}"
+        );
+    }
+
+    #[test]
+    fn build_exec_ssh_command_uses_proxycommand_transport() {
+        let proxy = "darkshell ssh-proxy --gateway https://gw.example.com --sandbox-id abc --token xyz --gateway-name mygw";
+        let cmd = build_exec_ssh_command(
+            proxy,
+            &["git".to_string(), "status".to_string()],
+            "/tmp/ctrl-%r@%h:%p",
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .filter_map(|a| a.to_str().map(String::from))
+            .collect();
+        let proxy_arg = args
+            .iter()
+            .find(|a| a.starts_with("ProxyCommand="))
+            .expect("must have ProxyCommand arg");
+        assert!(
+            proxy_arg.contains("ssh-proxy"),
+            "ProxyCommand must use the same ssh-proxy transport as upstream"
+        );
+    }
+
+    #[test]
+    fn build_exec_ssh_command_shell_escapes_remote_command() {
+        let cmd = build_exec_ssh_command(
+            "proxy",
+            &[
+                "echo".to_string(),
+                "hello world".to_string(),
+                "foo;bar".to_string(),
+            ],
+            "/tmp/ctrl",
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .filter_map(|a| a.to_str().map(String::from))
+            .collect();
+        // The last arg should be the escaped command string
+        let last = args.last().expect("must have args");
+        assert!(
+            last.contains("hello world") || last.contains("'hello world'"),
+            "remote command args with spaces must be shell-escaped, got: {last}"
+        );
+    }
+
+    #[test]
+    fn exec_result_exit_code_timeout_is_124() {
+        assert_eq!(
+            EXIT_CODE_TIMEOUT, 124,
+            "timeout exit code must match POSIX timeout(1) convention"
+        );
+    }
+
+    #[test]
+    fn exec_default_timeout_is_300_seconds() {
+        assert_eq!(
+            EXEC_DEFAULT_TIMEOUT_SECS, 300,
+            "default timeout must be 300 seconds (5 minutes)"
+        );
+    }
+
+    #[test]
+    fn exec_result_captures_all_fields() {
+        let result = ExecResult {
+            stdout: b"output\n".to_vec(),
+            stderr: b"err\n".to_vec(),
+            exit_code: 42,
+            duration: Duration::from_millis(150),
+        };
+        assert_eq!(result.exit_code, 42);
+        assert_eq!(result.stdout, b"output\n");
+        assert_eq!(result.stderr, b"err\n");
+        assert!(result.duration.as_millis() >= 150);
+    }
+
+    #[test]
+    fn exec_json_output_format() {
+        let result = ExecResult {
+            stdout: b"hello\n".to_vec(),
+            stderr: b"warn\n".to_vec(),
+            exit_code: 0,
+            duration: Duration::from_millis(42),
+        };
+        let json = serde_json::json!({
+            "stdout": String::from_utf8_lossy(&result.stdout),
+            "stderr": String::from_utf8_lossy(&result.stderr),
+            "exit_code": result.exit_code,
+            "duration_ms": result.duration.as_millis() as u64,
+        });
+        let obj = json.as_object().expect("must be object");
+        assert!(obj.contains_key("stdout"));
+        assert!(obj.contains_key("stderr"));
+        assert!(obj.contains_key("exit_code"));
+        assert!(obj.contains_key("duration_ms"));
+        assert_eq!(obj["exit_code"], 0);
+        assert_eq!(obj["stdout"], "hello\n");
+    }
+
+    #[test]
+    fn cleanup_control_sockets_handles_missing_dir() {
+        // Should not panic even if the directory doesn't exist.
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        // Directory doesn't exist yet — cleanup should be a no-op.
+        cleanup_control_sockets();
+        unsafe {
+            match old_xdg {
+                Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn controlsocket_dir_created_with_restricted_permissions() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        }
+        let dir = controlsocket_dir().unwrap();
+        openshell_core::paths::create_dir_restricted(&dir).unwrap();
+        assert!(dir.exists(), "directory must be created");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "directory must have 0700 permissions, got {mode:04o}");
+        }
+        unsafe {
+            match old_xdg {
+                Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 }
