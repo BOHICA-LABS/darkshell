@@ -1,234 +1,246 @@
-# OpenShell
+# DarkShell
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/NVIDIA/OpenShell/blob/main/LICENSE)
-[![PyPI](https://img.shields.io/badge/PyPI-openshell-orange?logo=pypi)](https://pypi.org/project/openshell/)
-[![Security Policy](https://img.shields.io/badge/Security-Report%20a%20Vulnerability-red)](SECURITY.md)
-[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen)](https://docs.nvidia.com/openshell/latest/index.html)
-[![Project Status](https://img.shields.io/badge/status-alpha-orange)](https://docs.nvidia.com/openshell/latest/about/release-notes.html)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+[![CI](https://github.com/BOHICA-LABS/darkshell/actions/workflows/ci.yml/badge.svg)](https://github.com/BOHICA-LABS/darkshell/actions/workflows/ci.yml)
+[![Fork Validation](https://github.com/BOHICA-LABS/darkshell/actions/workflows/ci_fork_validation.yml/badge.svg)](https://github.com/BOHICA-LABS/darkshell/actions/workflows/ci_fork_validation.yml)
 
-OpenShell is the safe, private runtime for autonomous AI agents. It provides sandboxed execution environments that protect your data, credentials, and infrastructure — governed by declarative YAML policies that prevent unauthorized file access, data exfiltration, and uncontrolled network activity.
+DarkShell is a fork of [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) with
+enhanced developer experience for the [DarkClaw](https://github.com/BOHICA-LABS/DarkClaw)
+factory ecosystem. It adds fast file transfer, direct command execution, first-class
+MCP server management, full sandbox observability, and declarative blueprint-based
+sandbox creation — without changing OpenShell's kernel-enforced security model.
 
-OpenShell is built agent-first. The project ships with agent skills for everything from cluster debugging to policy generation, and we expect contributors to use them.
+> **Everything we add is additive.** No security downgrades, no isolation weakening.
+> Landlock, seccomp, network namespaces, OPA policy, and SSRF protection are
+> inherited unchanged from upstream.
 
-> **Alpha software — single-player mode.** OpenShell is proof-of-life: one developer, one environment, one gateway. We are building toward multi-tenant enterprise deployments, but the starting point is getting your own environment up and running. Expect rough edges. Bring your agent.
+## What DarkShell Adds
 
-## Quickstart
+| Feature | OpenShell | DarkShell |
+|---------|-----------|-----------|
+| **File upload** | Full tar every time (30s+ for 2GB) | rsync delta — only changed files (< 2s) |
+| **Command execution** | SSH session per command (200-500ms) | `exec` with ControlMaster reuse (< 20ms) |
+| **MCP servers** | Manual proxy + policy + port forward | `darkshell mcp add` — one command |
+| **Sandbox setup** | 5+ manual commands | Blueprint YAML — one file, one command |
+| **Observability** | After-the-fact log retrieval | Real-time `sandbox watch` event stream |
+| **Upload preview** | Blind transfer | `--dry-run` shows what would change |
+| **Download** | Full workspace download | `--include`/`--exclude` filtering |
+| **Progress** | Silent transfer | Progress bar with bytes, rate, ETA |
+
+## Quick Start
 
 ### Prerequisites
 
-- **Docker** — Docker Desktop (or a Docker daemon) must be running.
+- **Docker** — Docker Desktop (or a Docker daemon) must be running
+- **Rust 1.88+** — `rustup install stable`
 
-### Install
-
-**Binary (recommended):**
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
-```
-
-**From PyPI (requires [uv](https://docs.astral.sh/uv/)):**
+### Build from Source
 
 ```bash
-uv tool install -U openshell
+git clone https://github.com/BOHICA-LABS/darkshell.git
+cd darkshell
+cargo build --workspace
 ```
 
-Both methods install the latest stable release by default. To install a specific version, set `OPENSHELL_VERSION` (binary) or pin the version with `uv tool install openshell==<version>`. A [`dev` release](https://github.com/NVIDIA/OpenShell/releases/tag/dev) is also available that tracks the latest commit on `main`.
+The `darkshell` binary will be at `target/debug/darkshell`.
 
-### Create a sandbox
+### Verify
 
 ```bash
-openshell sandbox create -- claude  # or opencode, codex, copilot
+# All upstream OpenShell commands work identically
+darkshell --help
+darkshell sandbox list
+darkshell gateway status
+
+# DarkShell-enhanced commands
+darkshell sandbox exec my-sandbox -- git status
+darkshell sandbox upload my-sandbox ./src --rsync
+darkshell sandbox download my-sandbox /workspace --include "*.rs"
+darkshell sandbox watch my-sandbox --type command,network
+darkshell mcp add my-sandbox --name perplexity --command "npx perplexity-mcp"
+darkshell sandbox create --from-blueprint factory.yaml
 ```
 
-A gateway is created automatically on first use. To deploy on a remote host instead, pass `--remote user@host` to the create command.
+## Blueprint Example
 
-The sandbox container includes the following tools by default:
+Define your complete sandbox environment in one file:
 
-| Category   | Tools                                                    |
-| ---------- | -------------------------------------------------------- |
-| Agent      | `claude`, `opencode`, `codex`, `copilot`                 |
-| Language   | `python` (3.13), `node` (22)                             |
-| Developer  | `gh`, `git`, `vim`, `nano`                               |
-| Networking | `ping`, `dig`, `nslookup`, `nc`, `traceroute`, `netstat` |
-
-For more details see https://github.com/NVIDIA/OpenShell-Community/tree/main/sandboxes/base.
-
-### See network policy in action
-
-Every sandbox starts with **minimal outbound access**. You open additional access with a short YAML policy that the proxy enforces at the HTTP method and path level, without restarting anything.
+```yaml
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: dark-factory-agent
+spec:
+  image: ghcr.io/bohica-labs/darkshell-factory:latest
+  policy: policies/factory-agent.yaml
+  providers:
+    - github
+    - anthropic
+  mcp_servers:
+    - name: perplexity
+      transport: bridge
+      command: npx -y @anthropic/perplexity-mcp
+      env: [PERPLEXITY_API_KEY]
+    - name: tally
+      transport: in-sandbox
+      command: /opt/mcp-servers/tally
+  forwards:
+    - "8080"
+    - "3000"
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+  upload:
+    - "./src:/sandbox/workspace"
+```
 
 ```bash
-# 1. Create a sandbox (starts with minimal outbound access)
-openshell sandbox create
-
-# 2. Inside the sandbox — blocked
-sandbox$ curl -sS https://api.github.com/zen
-curl: (56) Received HTTP code 403 from proxy after CONNECT
-
-# 3. Back on the host — apply a read-only GitHub API policy
-sandbox$ exit
-openshell policy set demo --policy examples/sandbox-policy-quickstart/policy.yaml --wait
-
-# 4. Reconnect — GET allowed, POST blocked by L7
-openshell sandbox connect demo
-sandbox$ curl -sS https://api.github.com/zen
-Anything added dilutes everything else.
-
-sandbox$ curl -sS -X POST https://api.github.com/repos/octocat/hello-world/issues -d '{"title":"oops"}'
-{"error":"policy_denied","detail":"POST /repos/octocat/hello-world/issues not permitted by policy"}
+darkshell sandbox create --from-blueprint factory.yaml
 ```
 
-See the [full walkthrough](examples/sandbox-policy-quickstart/) or run the automated demo:
+## Architecture
+
+DarkShell adds 3 new crates alongside the upstream OpenShell workspace:
+
+```
+openshell-cli ──→ darkshell-blueprint  (schema + orchestration)
+              ──→ darkshell-mcp        (bridge daemon + policy + logging)
+              ──→ darkshell-observe    (event streaming + filtering)
+              ──→ openshell-core ──→ openshell-sandbox ──→ openshell-server
+                                      (UNCHANGED except one narrow
+                                       inference logging hook behind
+                                       a feature flag — ADR-011)
+```
+
+All DarkShell code lives in the CLI crate or new crates. The sandbox runtime
+(Landlock, seccomp, netns, proxy, OPA) is never modified.
+
+See [docs/architecture.md](docs/architecture.md) for the full architecture document
+with 11 ADRs, component map, and deployment topology.
+
+## MCP Bridge Architecture
+
+DarkShell bridges MCP servers into sandboxes without weakening isolation:
+
+```
+HOST                                    SANDBOX
+┌─────────────────────────┐            ┌──────────────────────┐
+│ MCP Bridge Daemon       │  port fwd  │ Agent (Claude Code)  │
+│ ├─ Perplexity (stdio)   │───────────→│ localhost:9100       │
+│ │  has PERPLEXITY_KEY   │            │                      │
+│ ├─ Playwright (stdio)   │───────────→│ localhost:9101       │
+│ │  has browser binary   │            │                      │
+│ └─ Tool policy enforce  │            │ Tally (in-sandbox)   │
+│    + tool call logging  │            │ (filesystem only)    │
+└─────────────────────────┘            └──────────────────────┘
+```
+
+Credentials stay on the host. The agent sees HTTP endpoints. Bridge-layer
+policy and logging provide compensating controls since port-forwarded traffic
+bypasses the sandbox OPA proxy.
+
+## Development
 
 ```bash
-bash examples/sandbox-policy-quickstart/demo.sh
+# Install tools
+just setup
+
+# Run full CI locally
+just ci
+
+# Run DarkShell integration tests only
+just test-darkshell
+
+# Check fork integrity
+just fork-check
+
+# Generate coverage report
+just coverage
+
+# Prepare a release
+just release 0.1.0
 ```
 
-## How It Works
+## Testing
 
-OpenShell isolates each sandbox in its own container with policy-enforced egress routing. A lightweight gateway coordinates sandbox lifecycle, and every outbound connection is intercepted by the policy engine, which does one of three things:
+| Suite | Command | Tests |
+|-------|---------|-------|
+| All tests | `cargo test --workspace` | 494+ |
+| DarkShell unit | `cargo test -p darkshell-mcp -p darkshell-observe -p darkshell-blueprint` | 257 |
+| DarkShell integration | `cargo test -p openshell-cli --test 'darkshell_*'` | 51 |
+| MCP bridge E2E | `cargo test -p darkshell-mcp --test '*'` | 13 |
+| Upstream | `cargo test -p openshell-core -p openshell-sandbox -p openshell-server` | 170+ |
 
-- **Allows** — the destination and binary match a policy block.
-- **Routes for inference** — strips caller credentials, injects backend credentials, and forwards to the managed model.
-- **Denies** — blocks the request and logs it.
+## Upstream Compatibility
 
-| Component          | Role                                                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| **Gateway**        | Control-plane API that coordinates sandbox lifecycle and acts as the auth boundary.          |
-| **Sandbox**        | Isolated runtime with container supervision and policy-enforced egress routing.              |
-| **Policy Engine**  | Enforces filesystem, network, and process constraints from application layer down to kernel. |
-| **Privacy Router** | Privacy-aware LLM routing that keeps sensitive context on sandbox compute.                   |
-
-Under the hood, all these components run as a [K3s](https://k3s.io/) Kubernetes cluster inside a single Docker container — no separate K8s install required. The `openshell gateway` commands take care of provisioning the container and cluster.
-
-## Protection Layers
-
-OpenShell applies defense in depth across four policy domains:
-
-| Layer      | What it protects                                    | When it applies             |
-| ---------- | --------------------------------------------------- | --------------------------- |
-| Filesystem | Prevents reads/writes outside allowed paths.        | Locked at sandbox creation. |
-| Network    | Blocks unauthorized outbound connections.           | Hot-reloadable at runtime.  |
-| Process    | Blocks privilege escalation and dangerous syscalls. | Locked at sandbox creation. |
-| Inference  | Reroutes model API calls to controlled backends.    | Hot-reloadable at runtime.  |
-
-Policies are declarative YAML files. Static sections (filesystem, process) are locked at creation; dynamic sections (network, inference) can be hot-reloaded on a running sandbox with `openshell policy set`.
-
-## Providers
-
-Agents need credentials — API keys, tokens, service accounts. OpenShell manages these as **providers**: named credential bundles that are injected into sandboxes at creation. The CLI auto-discovers credentials for recognized agents (Claude, Codex, OpenCode, Copilot) from your shell environment, or you can create providers explicitly with `openshell provider create`. Credentials never leak into the sandbox filesystem; they are injected as environment variables at runtime.
-
-## GPU Support (Experimental)
-
-> **Experimental** — GPU passthrough works on supported hosts but is under active development. Expect rough edges and breaking changes.
-
-OpenShell can pass host GPUs into sandboxes for local inference, fine-tuning, or any GPU workload. Add `--gpu` when creating a sandbox:
+DarkShell tracks [NVIDIA/OpenShell](https://github.com/NVIDIA/OpenShell) `main` branch:
 
 ```bash
-openshell sandbox create --gpu --from [gpu-enabled-sandbox] -- claude
+# Check upstream drift
+git fetch upstream
+git log develop..upstream/main --oneline | head
+
+# Merge upstream changes
+git merge upstream/main
 ```
 
-The CLI auto-bootstraps a GPU-enabled gateway on first use. GPU intent is also inferred automatically for community images with `gpu` in the name.
+**Merge strategy:**
+- Internal crate names match upstream (`openshell-*`) for clean merges
+- DarkShell code lives in separate files and new crates — minimal conflict surface
+- Only `openshell-cli/src/main.rs` and `openshell-cli/src/ssh.rs` have DarkShell
+  additions alongside upstream code
+- CI validates fork integrity on every PR
 
-**Requirements:** NVIDIA drivers and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) must be installed on the host. The sandbox image itself must include the appropriate GPU drivers and libraries for your workload — the default `base` image does not. See the [BYOC example](https://github.com/NVIDIA/OpenShell/tree/main/examples/bring-your-own-container) for building a custom sandbox image with GPU support.
+## Security Model
 
-## Supported Agents
+DarkShell inherits OpenShell's kernel-enforced security:
 
-| Agent                                                         | Source                                                                           | Notes                                                                         |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [`base`](https://github.com/NVIDIA/OpenShell-Community/tree/main/sandboxes/base) | Works out of the box. Provider uses `ANTHROPIC_API_KEY`.                      |
-| [OpenCode](https://opencode.ai/)                              | [`base`](https://github.com/NVIDIA/OpenShell-Community/tree/main/sandboxes/base) | Works out of the box. Provider uses `OPENAI_API_KEY` or `OPENROUTER_API_KEY`. |
-| [Codex](https://developers.openai.com/codex)                  | [`base`](https://github.com/NVIDIA/OpenShell-Community/tree/main/sandboxes/base) | Works out of the box. Provider uses `OPENAI_API_KEY`.                         |
-| [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) | [`base`](https://github.com/NVIDIA/OpenShell-Community/tree/main/sandboxes/base) | Works out of the box. Provider uses `GITHUB_TOKEN` or `COPILOT_GITHUB_TOKEN`. |
-| [OpenClaw](https://openclaw.ai/)                              | [Community](https://github.com/NVIDIA/OpenShell-Community)                       | Launch with `openshell sandbox create --from openclaw`.                       |
-| [Ollama](https://ollama.com/)                                 | [Community](https://github.com/NVIDIA/OpenShell-Community)                       | Launch with `openshell sandbox create --from ollama`.                         |
+| Layer | Mechanism | DarkShell Impact |
+|-------|-----------|-----------------|
+| Filesystem | Landlock LSM (`restrict_self()` — irreversible) | Unchanged |
+| Syscalls | seccomp BPF (`PR_SET_NO_NEW_PRIVS` — irreversible) | Unchanged |
+| Network | Namespace + OPA-evaluated HTTP proxy | Unchanged |
+| SSRF | Loopback/link-local always blocked | Unchanged |
+| Credentials | Provider-based injection, never in sandbox | Extended (MCP credential isolation) |
 
-## Key Commands
+**One exception:** A narrow observability hook in `proxy.rs` captures inference
+request/response content for logging. It's behind the `darkshell-inference-log`
+feature flag, uses `try_send()` (never blocks), and compiles to zero code when
+disabled. See [ADR-011](docs/architecture.md#adr-011).
 
-| Command                                                    | Description                                     |
-| ---------------------------------------------------------- | ----------------------------------------------- |
-| `openshell sandbox create -- <agent>`                      | Create a sandbox and launch an agent.           |
-| `openshell sandbox connect [name]`                         | SSH into a running sandbox.                     |
-| `openshell sandbox list`                                   | List all sandboxes.                             |
-| `openshell provider create --type [type]] --from-existing` | Create a credential provider from env vars.     |
-| `openshell policy set <name> --policy file.yaml`           | Apply or update a policy on a running sandbox.  |
-| `openshell policy get <name>`                              | Show the active policy.                         |
-| `openshell inference set --provider <p> --model <m>`       | Configure the `inference.local` endpoint.       |
-| `openshell logs [name] --tail`                             | Stream sandbox logs.                            |
-| `openshell term`                                           | Launch the real-time terminal UI for debugging. |
+## Documentation
 
-See the full [CLI reference](https://github.com/NVIDIA/OpenShell/blob/main/docs/reference/cli.md) for all commands, flags, and environment variables.
+| Document | Description |
+|----------|-------------|
+| [KICKSTART.md](KICKSTART.md) | Upstream analysis, all 32 enhancements, fork strategy |
+| [Product Brief](docs/product-brief.md) | What, who, scope, success criteria |
+| [PRD](docs/prd.md) | 38 functional + 18 non-functional requirements |
+| [Architecture](docs/architecture.md) | Components, interfaces, 11 ADRs, deployment topology |
+| [Story Index](docs/stories/00-index.md) | 33 stories across 7 epics, dependency DAG |
+| [Adversarial Spec Review](docs/adversarial-spec-review.md) | 22 spec findings (all resolved) |
+| [Adversarial Code Review](docs/adversarial-code-review.md) | 64 code findings (all remediated) |
 
-## Terminal UI
+## Relationship to DarkClaw
 
-OpenShell includes a real-time terminal dashboard for monitoring gateways, sandboxes, and providers — inspired by [k9s](https://k9scli.io/).
-
-```bash
-openshell term
+```
+DarkClaw (orchestration)
+  │
+  ├── Uses darkshell (if available) — enhanced features
+  │     ├── Delta upload, exec, progress, blueprints
+  │     ├── MCP bridge + management (factory MCP servers)
+  │     └── Observability (live watch, OTel, audit logs)
+  │
+  └── Falls back to openshell — upstream, always works
+        └── Full tar upload, SSH for commands, manual MCP setup
 ```
 
-<p align="center">
-  <img src="docs/assets/openshell-terminal.png" alt="OpenShell Terminal UI">
-</p>
-
-The TUI gives you a live, keyboard-driven view of your cluster. Navigate with `Tab` to switch panels, `j`/`k` to move through lists, `Enter` to select, and `:` for command mode. Cluster health and sandbox status auto-refresh every two seconds.
-
-## Community Sandboxes and BYOC
-
-Use `--from` to create sandboxes from the [OpenShell Community](https://github.com/NVIDIA/OpenShell-Community) catalog, a local directory, or a container image:
-
-```bash
-openshell sandbox create --from openclaw           # community catalog
-openshell sandbox create --from ./my-sandbox-dir   # local Dockerfile
-openshell sandbox create --from registry.io/img:v1 # container image
-```
-
-See the [community sandboxes](https://github.com/NVIDIA/OpenShell/blob/main/docs/sandboxes/community-sandboxes.md) catalog and the [BYOC example](https://github.com/NVIDIA/OpenShell/tree/main/examples/bring-your-own-container) for details.
-
-## Explore with Your Agent
-
-Clone the repo and point your coding agent at it. The project includes agent skills that can answer questions, walk you through workflows, and diagnose problems — no issue filing required.
-
-```bash
-git clone https://github.com/NVIDIA/OpenShell.git   # or git@github.com:NVIDIA/OpenShell.git
-cd OpenShell
-# Point your agent here — it will discover the skills in .agents/skills/ automatically
-```
-
-Your agent can load skills for CLI usage (`openshell-cli`), cluster troubleshooting (`debug-openshell-cluster`), inference troubleshooting (`debug-inference`), policy generation (`generate-sandbox-policy`), and more. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full skills table.
-
-## Built With Agents
-
-OpenShell is developed using the same agent-driven workflows it enables. The `.agents/skills/` directory contains workflow automation that powers the project's development cycle:
-
-- **Spike and build:** Investigate a problem with `create-spike`, then implement it with `build-from-issue` once a human approves.
-- **Triage and route:** Community issues are assessed with `triage-issue`, classified, and routed into the spike-build pipeline.
-- **Security review:** `review-security-issue` produces a severity assessment and remediation plan. `fix-security-issue` implements it.
-- **Policy authoring:** `generate-sandbox-policy` creates YAML policies from plain-language requirements or API documentation.
-
-All implementation work is human-gated — agents propose plans, humans approve, agents build. See [AGENTS.md](AGENTS.md) for the full workflow chain documentation.
-
-## Getting Help
-
-- **Questions and discussion:** [GitHub Discussions](https://github.com/NVIDIA/OpenShell/discussions)
-- **Bug reports:** [GitHub Issues](https://github.com/NVIDIA/OpenShell/issues) — use the bug report template
-- **Security vulnerabilities:** See [SECURITY.md](SECURITY.md) — do not use GitHub Issues
-- **Agent-assisted help:** Clone the repo and use the agent skills in `.agents/skills/` for self-service diagnostics
-
-## Learn More
-
-- [Full Documentation](https://docs.nvidia.com/openshell/latest/index.html) — overview, architecture, tutorials, and reference
-- [Quickstart](https://github.com/NVIDIA/OpenShell/blob/main/docs/get-started/quickstart.md) — detailed install and first sandbox walkthrough
-- [GitHub Sandbox Tutorial](https://github.com/NVIDIA/OpenShell/blob/main/docs/tutorials/github-sandbox.md) — end-to-end scoped GitHub repo access
-- [Architecture](https://github.com/NVIDIA/OpenShell/tree/main/architecture) — detailed architecture docs and design decisions
-- [Support Matrix](https://github.com/NVIDIA/OpenShell/blob/main/docs/reference/support-matrix.md) — platforms, versions, and kernel requirements
-- [Brev Launchable](https://brev.nvidia.com/launchable/deploy/now?launchableID=env-3Ap3tL55zq4a8kew1AuW0FpSLsg) — try OpenShell on cloud compute without local setup
-- [Agent Instructions](AGENTS.md) — system prompt and workflow documentation for agent contributors
-
-## Contributing
-
-OpenShell is built agent-first — your agent is your first collaborator. Before opening issues or submitting code, point your agent at the repo and let it use the skills in `.agents/skills/` to investigate, diagnose, and prototype. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full agent skills table, contribution workflow, and development setup.
+DarkClaw detects which binary is available at runtime. DarkShell enhancements are
+additive — DarkClaw gains speed and observability when DarkShell is installed but
+never requires it.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](https://github.com/NVIDIA/OpenShell/blob/main/LICENSE).
+Apache 2.0 — same as upstream. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+This project is a fork of [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell).
+Copyright 2025-2026 NVIDIA CORPORATION & AFFILIATES.
