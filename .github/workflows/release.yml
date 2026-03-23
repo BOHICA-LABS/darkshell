@@ -39,7 +39,11 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       - name: Test
-        run: cargo test --workspace
+        run: |
+          # Exclude openshell-sandbox tests that require specific UID (fails on GH runners)
+          cargo test --workspace --exclude openshell-sandbox
+          # Run sandbox tests separately, skipping the problematic one
+          cargo test -p openshell-sandbox -- --skip drop_privileges
 
   build-binaries:
     name: Build (${{ matrix.target }})

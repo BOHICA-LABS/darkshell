@@ -77,7 +77,11 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: test
-      - run: cargo test --workspace
+      - name: Run tests
+        run: |
+          # Exclude openshell-sandbox tests that require specific UID (fails on GH runners)
+          cargo test --workspace --exclude openshell-sandbox
+          cargo test -p openshell-sandbox -- --skip drop_privileges
 
   test-darkshell-integration:
     name: DarkShell Integration Tests
