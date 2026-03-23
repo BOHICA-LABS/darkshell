@@ -5,26 +5,70 @@
 //! `darkshell sandbox watch`.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A sandbox event emitted by the watch stream.
 ///
 /// Every event carries a timestamp, sandbox identifier, and event type
 /// discriminator alongside its type-specific payload.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// The `event_type` field is computed from the payload variant (OBS-F009),
+/// eliminating the dual source of truth. Custom Serialize/Deserialize impls
+/// preserve the `event_type` field in the JSON wire format.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchEvent {
     /// When the event occurred (UTC).
-    pub timestamp: DateTime<Utc>,
+    timestamp: DateTime<Utc>,
 
     /// Which sandbox produced this event.
-    pub sandbox: String,
-
-    /// The event type discriminator (e.g. "command", "file", "network").
-    pub event_type: String,
+    sandbox: String,
 
     /// Type-specific payload.
+    payload: EventPayload,
+}
+
+/// Helper struct for WatchEvent serialization that includes event_type in JSON.
+#[derive(Serialize)]
+struct WatchEventSer<'a> {
+    timestamp: &'a DateTime<Utc>,
+    sandbox: &'a str,
+    event_type: &'a str,
     #[serde(flatten)]
-    pub payload: EventPayload,
+    payload: &'a EventPayload,
+}
+
+/// Helper struct for WatchEvent deserialization.
+#[derive(Deserialize)]
+struct WatchEventDe {
+    timestamp: DateTime<Utc>,
+    sandbox: String,
+    #[allow(dead_code)]
+    event_type: String, // consumed but not stored; recomputed from payload
+    #[serde(flatten)]
+    payload: EventPayload,
+}
+
+impl Serialize for WatchEvent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let ser = WatchEventSer {
+            timestamp: &self.timestamp,
+            sandbox: &self.sandbox,
+            event_type: self.event_type(),
+            payload: &self.payload,
+        };
+        ser.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WatchEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let de = WatchEventDe::deserialize(deserializer)?;
+        Ok(Self {
+            timestamp: de.timestamp,
+            sandbox: de.sandbox,
+            payload: de.payload,
+        })
+    }
 }
 
 /// Type-specific event payloads.
@@ -173,7 +217,16 @@ pub struct WatchMetaEvent {
 impl WatchEvent {
     /// Create a new `WatchEvent` with the current UTC timestamp.
     pub fn new(sandbox: impl Into<String>, payload: EventPayload) -> Self {
-        let event_type = match &payload {
+        Self {
+            timestamp: Utc::now(),
+            sandbox: sandbox.into(),
+            payload,
+        }
+    }
+
+    /// The event type discriminator, computed from the payload variant (OBS-F009).
+    pub fn event_type(&self) -> &str {
+        match &self.payload {
             EventPayload::CommandExecuted(_) => "command",
             EventPayload::FileChanged(_) => "file",
             EventPayload::NetworkRequest(_) => "network",
@@ -182,14 +235,22 @@ impl WatchEvent {
             EventPayload::SandboxStateChange(_) => "lifecycle",
             EventPayload::Inference(_) => "inference",
             EventPayload::WatchMeta(_) => "watch",
-        };
-
-        Self {
-            timestamp: Utc::now(),
-            sandbox: sandbox.into(),
-            event_type: event_type.to_owned(),
-            payload,
         }
+    }
+
+    /// When the event occurred (UTC).
+    pub fn timestamp(&self) -> &DateTime<Utc> {
+        &self.timestamp
+    }
+
+    /// Which sandbox produced this event.
+    pub fn sandbox(&self) -> &str {
+        &self.sandbox
+    }
+
+    /// Type-specific payload.
+    pub fn payload(&self) -> &EventPayload {
+        &self.payload
     }
 
     /// Serialize this event as a single JSON line (no trailing newline).
@@ -208,7 +269,7 @@ impl WatchEvent {
     /// display. When false, plain text is emitted.
     pub fn to_human_readable(&self, color: bool) -> String {
         let ts = self.timestamp.format("%H:%M:%S%.3f");
-        let type_label = &self.event_type;
+        let type_label = self.event_type();
 
         let detail = match &self.payload {
             EventPayload::CommandExecuted(e) => {
@@ -257,7 +318,7 @@ impl WatchEvent {
         };
 
         if color {
-            let type_color = match type_label.as_str() {
+            let type_color = match type_label {
                 "command" => "\x1b[36m",  // cyan
                 "file" => "\x1b[33m",     // yellow
                 "network" => "\x1b[35m",  // magenta
@@ -393,6 +454,20 @@ mod tests {
                 phase: "deleted".to_owned(),
                 previous_phase: Some("ready".to_owned()),
             }),
+            EventPayload::Inference(crate::inference_log::InferenceEvent {
+                request_id: "req-test".to_owned(),
+                timestamp: Utc::now(),
+                model_provider: "anthropic".to_owned(),
+                model: "claude-3-opus".to_owned(),
+                prompt: "test prompt".to_owned(),
+                response: "test response".to_owned(),
+                prompt_tokens: Some(10),
+                completion_tokens: Some(20),
+                latency_ms: 200,
+                status_code: 200,
+                error: false,
+                truncated: false,
+            }),
             EventPayload::WatchMeta(WatchMetaEvent {
                 overflow_count: Some(42),
                 parse_error_offset: None,
@@ -490,8 +565,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(event.event_type, "lifecycle");
-        if let EventPayload::SandboxStateChange(ref lc) = event.payload {
+        assert_eq!(event.event_type(), "lifecycle");
+        if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "deleted");
         } else {
             panic!("expected SandboxStateChange payload");

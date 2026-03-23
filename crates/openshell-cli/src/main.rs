@@ -1658,6 +1658,11 @@ enum McpCommands {
         /// Environment variable keys to pass through (e.g., --env TAVILY_API_KEY).
         #[arg(long = "env")]
         env_keys: Vec<String>,
+
+        /// Transport mode: "bridge" (default) runs MCP server on host with stdio bridge;
+        /// "in-sandbox" runs the server inside the sandbox.
+        #[arg(long, default_value = "bridge", value_parser = ["bridge", "in-sandbox"])]
+        transport: String,
     },
 
     /// List MCP servers connected to a sandbox.
@@ -1725,12 +1730,17 @@ async fn main() -> Result<()> {
                 name,
                 command,
                 env_keys,
+                transport,
             } => {
                 let cmd_parts: Vec<String> = command
                     .split_whitespace()
                     .map(String::from)
                     .collect();
-                openshell_cli::mcp::mcp_add(&sandbox, &name, &cmd_parts, &env_keys)?;
+                if transport == "in-sandbox" {
+                    openshell_cli::mcp::start_in_sandbox_mcp(&sandbox, &name, &cmd_parts)?;
+                } else {
+                    openshell_cli::mcp::mcp_add(&sandbox, &name, &cmd_parts, &env_keys)?;
+                }
             }
             McpCommands::List { sandbox, json } => {
                 let format = if json {
@@ -2590,7 +2600,7 @@ async fn main() -> Result<()> {
                         }
                         SandboxCommands::SshConfig { name } => {
                             let name = resolve_sandbox_name(name, &ctx.name)?;
-                            run::print_ssh_config(&ctx.name, &name);
+                            run::print_ssh_config(&ctx.name, &name)?;
                         }
                         SandboxCommands::Exec {
                             name,
@@ -2683,7 +2693,7 @@ async fn main() -> Result<()> {
                                         Ok(()) => {
                                             // Process exited normally — sandbox may
                                             // have been deleted (AC-005)
-                                            let deleted = darkshell_observe::watch::sandbox_deleted_event(&sandbox_name);
+                                            let deleted = darkshell_observe::watch::sandbox_deleted_event(&sandbox_name, Some("ready"));
                                             let _ = sender.send(deleted).await;
                                             return;
                                         }
@@ -2710,10 +2720,10 @@ async fn main() -> Result<()> {
                                 println!("{output}");
 
                                 // Exit cleanly on sandbox deletion (AC-005)
-                                if event.event_type == "lifecycle" {
+                                if event.event_type() == "lifecycle" {
                                     if let darkshell_observe::EventPayload::SandboxStateChange(
-                                        ref lc,
-                                    ) = event.payload
+                                        lc,
+                                    ) = event.payload()
                                     {
                                         if lc.phase == "deleted" {
                                             break;

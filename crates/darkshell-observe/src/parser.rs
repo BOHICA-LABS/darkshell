@@ -226,8 +226,8 @@ mod tests {
     fn parse_policy_decision_line() {
         let event = parse_log_line("sb", "policy: network_access api.com:443 -> allow [rule: default-allow]", 0)
             .expect("should parse");
-        assert_eq!(event.event_type, "policy");
-        if let EventPayload::PolicyDecision(p) = &event.payload {
+        assert_eq!(event.event_type(), "policy");
+        if let EventPayload::PolicyDecision(p) = event.payload() {
             assert_eq!(p.action, "network_access");
             assert_eq!(p.endpoint.as_deref(), Some("api.com:443"));
             assert_eq!(p.result, "allow");
@@ -241,8 +241,8 @@ mod tests {
     fn parse_network_request_line() {
         let event = parse_log_line("sb", "network: GET example.com:443 allowed", 0)
             .expect("should parse");
-        assert_eq!(event.event_type, "network");
-        if let EventPayload::NetworkRequest(n) = &event.payload {
+        assert_eq!(event.event_type(), "network");
+        if let EventPayload::NetworkRequest(n) = event.payload() {
             assert_eq!(n.host, "example.com");
             assert_eq!(n.port, 443);
             assert_eq!(n.method.as_deref(), Some("GET"));
@@ -256,8 +256,8 @@ mod tests {
     fn parse_command_executed_line() {
         let event = parse_log_line("sb", "exec: cargo build [exit=0] [1234ms]", 0)
             .expect("should parse");
-        assert_eq!(event.event_type, "command");
-        if let EventPayload::CommandExecuted(c) = &event.payload {
+        assert_eq!(event.event_type(), "command");
+        if let EventPayload::CommandExecuted(c) = event.payload() {
             assert_eq!(c.command, "cargo build");
             assert_eq!(c.exit_code, Some(0));
             assert_eq!(c.duration_ms, Some(1234));
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn parse_command_without_exit_or_duration() {
         let event = parse_log_line("sb", "exec: git status", 0).expect("should parse");
-        if let EventPayload::CommandExecuted(c) = &event.payload {
+        if let EventPayload::CommandExecuted(c) = event.payload() {
             assert_eq!(c.command, "git status");
             assert_eq!(c.exit_code, None);
             assert_eq!(c.duration_ms, None);
@@ -283,8 +283,8 @@ mod tests {
         let event =
             parse_log_line("sb", "file: modify /sandbox/src/main.rs by cargo", 0)
                 .expect("should parse");
-        assert_eq!(event.event_type, "file");
-        if let EventPayload::FileChanged(f) = &event.payload {
+        assert_eq!(event.event_type(), "file");
+        if let EventPayload::FileChanged(f) = event.payload() {
             assert_eq!(f.operation, "modify");
             assert_eq!(f.path, "/sandbox/src/main.rs");
             assert_eq!(f.process.as_deref(), Some("cargo"));
@@ -297,7 +297,7 @@ mod tests {
     fn parse_file_changed_without_process() {
         let event =
             parse_log_line("sb", "file: create /tmp/output.txt", 0).expect("should parse");
-        if let EventPayload::FileChanged(f) = &event.payload {
+        if let EventPayload::FileChanged(f) = event.payload() {
             assert_eq!(f.process, None);
         } else {
             panic!("expected FileChanged");
@@ -308,8 +308,8 @@ mod tests {
     fn parse_lifecycle_line() {
         let event = parse_log_line("sb", "lifecycle: ready from provisioning", 0)
             .expect("should parse");
-        assert_eq!(event.event_type, "lifecycle");
-        if let EventPayload::SandboxStateChange(lc) = &event.payload {
+        assert_eq!(event.event_type(), "lifecycle");
+        if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "ready");
             assert_eq!(lc.previous_phase.as_deref(), Some("provisioning"));
         } else {
@@ -321,7 +321,7 @@ mod tests {
     fn parse_lifecycle_without_previous() {
         let event =
             parse_log_line("sb", "lifecycle: provisioning", 0).expect("should parse");
-        if let EventPayload::SandboxStateChange(lc) = &event.payload {
+        if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "provisioning");
             assert_eq!(lc.previous_phase, None);
         } else {
@@ -344,8 +344,8 @@ mod tests {
     fn parse_line_with_replacement_char_returns_parse_error() {
         let line = "exec: \u{FFFD}bad bytes\u{FFFD}";
         let event = parse_log_line("sb", line, 42).expect("should return meta event");
-        assert_eq!(event.event_type, "watch");
-        if let EventPayload::WatchMeta(m) = &event.payload {
+        assert_eq!(event.event_type(), "watch");
+        if let EventPayload::WatchMeta(m) = event.payload() {
             assert_eq!(m.parse_error_offset, Some(42));
             assert!(m.message.contains("non-UTF-8"));
         } else {
@@ -358,7 +358,7 @@ mod tests {
         let event =
             parse_log_line("sb", "policy: file_access /etc/passwd -> deny", 0)
                 .expect("should parse");
-        if let EventPayload::PolicyDecision(p) = &event.payload {
+        if let EventPayload::PolicyDecision(p) = event.payload() {
             assert_eq!(p.result, "deny");
             assert_eq!(p.rule_matched, None);
         } else {

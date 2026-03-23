@@ -7,12 +7,23 @@
 //! Redaction is always applied *before* any event emission (SOUL.md Rule 4).
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
+
+/// Pre-compiled PII regexes (OBS-F002: avoid recompilation on every call).
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("email regex is valid"));
+static PHONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("phone regex is valid"));
+static SSN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn regex is valid"));
+static CC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b").expect("credit card regex is valid"));
 
 /// Counter for events dropped due to channel backpressure (EC-I02).
 static DROPPED_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -33,6 +44,9 @@ pub struct InferenceEvent {
     pub request_id: String,
 
     /// When the inference request was initiated (UTC).
+    /// Serialized as `inference_timestamp` to avoid conflict with WatchEvent's
+    /// `timestamp` field when the payload is flattened.
+    #[serde(rename = "inference_timestamp")]
     pub timestamp: DateTime<Utc>,
 
     /// The model provider (e.g., "openai", "anthropic", "local").
@@ -84,7 +98,7 @@ pub struct RedactionConfig {
     /// Maximum number of characters to keep in prompt/response content.
     /// Content beyond this limit is truncated with a "[TRUNCATED]" marker.
     #[serde(default)]
-    pub truncate_tokens: Option<usize>,
+    pub truncate_chars: Option<usize>,
 }
 
 impl Default for RedactionConfig {
@@ -92,7 +106,7 @@ impl Default for RedactionConfig {
         Self {
             strip_pii: false,
             hash_fields: Vec::new(),
-            truncate_tokens: None,
+            truncate_chars: None,
         }
     }
 }
@@ -149,7 +163,7 @@ pub fn redact_inference_event(event: &InferenceEvent, config: &RedactionConfig) 
     }
 
     // Step 3: Truncate prompt/response content
-    if let Some(max_chars) = config.truncate_tokens {
+    if let Some(max_chars) = config.truncate_chars {
         redacted.prompt = truncate_content(&redacted.prompt, max_chars);
         redacted.response = truncate_content(&redacted.response, max_chars);
     }
@@ -165,25 +179,11 @@ pub fn redact_inference_event(event: &InferenceEvent, config: &RedactionConfig) 
 /// - US Social Security Numbers
 /// - Credit card numbers (basic pattern)
 fn strip_pii(text: &str) -> String {
-    // Email addresses
-    let email_re = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-        .expect("email regex is valid");
-    let result = email_re.replace_all(text, "[EMAIL_REDACTED]");
-
-    // US phone numbers: (555) 123-4567, 555-123-4567, +1-555-123-4567, etc.
-    let phone_re =
-        Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
-            .expect("phone regex is valid");
-    let result = phone_re.replace_all(&result, "[PHONE_REDACTED]");
-
-    // SSN: 123-45-6789
-    let ssn_re = Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn regex is valid");
-    let result = ssn_re.replace_all(&result, "[SSN_REDACTED]");
-
-    // Credit card numbers (basic 16-digit pattern with optional separators)
-    let cc_re = Regex::new(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b")
-        .expect("credit card regex is valid");
-    cc_re.replace_all(&result, "[CC_REDACTED]").into_owned()
+    // Uses pre-compiled LazyLock regexes (OBS-F002).
+    let result = EMAIL_RE.replace_all(text, "[EMAIL_REDACTED]");
+    let result = PHONE_RE.replace_all(&result, "[PHONE_REDACTED]");
+    let result = SSN_RE.replace_all(&result, "[SSN_REDACTED]");
+    CC_RE.replace_all(&result, "[CC_REDACTED]").into_owned()
 }
 
 /// SHA-256 hash a string, returning the hex-encoded digest.
@@ -195,7 +195,8 @@ fn sha256_hash(input: &str) -> String {
 
 /// Truncate content to a maximum character count, appending a marker if truncated.
 fn truncate_content(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
+    // OBS-F003: use char count, not byte length, for the guard check.
+    if text.chars().count() <= max_chars {
         return text.to_owned();
     }
     // Find a valid char boundary at or before max_chars
@@ -261,7 +262,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: true,
             hash_fields: Vec::new(),
-            truncate_tokens: None,
+            truncate_chars: None,
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -308,7 +309,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: vec!["prompt".to_owned(), "response".to_owned()],
-            truncate_tokens: None,
+            truncate_chars: None,
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -326,7 +327,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: vec!["model".to_owned(), "provider".to_owned()],
-            truncate_tokens: None,
+            truncate_chars: None,
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -346,7 +347,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: Vec::new(),
-            truncate_tokens: Some(100),
+            truncate_chars: Some(100),
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -363,7 +364,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: Vec::new(),
-            truncate_tokens: Some(10000),
+            truncate_chars: Some(10000),
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -388,7 +389,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: true,
             hash_fields: vec!["prompt".to_owned()],
-            truncate_tokens: Some(20),
+            truncate_chars: Some(20),
         };
 
         let redacted = redact_inference_event(&event, &config);
@@ -405,7 +406,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: vec!["prompt".to_owned(), "response".to_owned()],
-            truncate_tokens: None,
+            truncate_chars: None,
         };
         assert!(config.validate().is_empty());
     }
@@ -415,7 +416,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: vec!["prompt".to_owned(), "foo".to_owned(), "bar".to_owned()],
-            truncate_tokens: None,
+            truncate_chars: None,
         };
         let warnings = config.validate();
         assert_eq!(warnings.len(), 2);
@@ -429,7 +430,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: false,
             hash_fields: vec!["nonexistent".to_owned()],
-            truncate_tokens: None,
+            truncate_chars: None,
         };
 
         // Should not panic, event unchanged
@@ -583,6 +584,9 @@ mod tests {
 
     #[test]
     fn test_dropped_event_counter() {
+        // OBS-F005: Reset global counter to avoid test interference from other tests
+        // that call record_dropped_event(). Ideally the counter would be per-EventStream,
+        // but that's a larger refactor.
         reset_dropped_count();
         assert_eq!(dropped_event_count(), 0);
         record_dropped_event();
@@ -598,7 +602,7 @@ mod tests {
         let config = RedactionConfig::default();
         assert!(!config.strip_pii);
         assert!(config.hash_fields.is_empty());
-        assert!(config.truncate_tokens.is_none());
+        assert!(config.truncate_chars.is_none());
     }
 
     #[test]
@@ -606,7 +610,7 @@ mod tests {
         let config = RedactionConfig {
             strip_pii: true,
             hash_fields: vec!["prompt".to_owned()],
-            truncate_tokens: Some(500),
+            truncate_chars: Some(500),
         };
         let yaml = serde_json::to_string(&config).expect("serialize");
         let deserialized: RedactionConfig = serde_json::from_str(&yaml).expect("deserialize");

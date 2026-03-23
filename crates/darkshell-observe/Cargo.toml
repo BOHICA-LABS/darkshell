@@ -31,6 +31,10 @@ tracing = { workspace = true }
 sha2 = "0.10"
 regex = "1"
 
+# TODO(OBS-F012): Add openshell-core dependency when gateway API interaction is
+# needed for live event sourcing. See architecture doc DS-016 for the planned
+# integration point between observe and core crates.
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 

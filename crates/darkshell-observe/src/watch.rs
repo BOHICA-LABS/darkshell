@@ -156,6 +156,12 @@ impl EventStream {
                             ),
                         }),
                     );
+                    // OBS-F011: Always write overflow warning to stderr so it's visible
+                    // even if tracing is not configured or the channel is full.
+                    eprintln!(
+                        "warning: {} events dropped due to buffer overflow",
+                        self.dropped_count
+                    );
                     // Best-effort: if we can't send the overflow event either, just log it
                     if self.sender.try_send(overflow_event).is_err() {
                         warn!(
@@ -229,12 +235,15 @@ pub fn initial_backoff() -> Duration {
 }
 
 /// Create a "sandbox deleted" lifecycle event for clean exit (AC-005).
-pub fn sandbox_deleted_event(sandbox: &str) -> WatchEvent {
+///
+/// OBS-F010: `previous_phase` is caller-provided instead of hardcoded,
+/// since the sandbox may be deleted from any phase (not just "ready").
+pub fn sandbox_deleted_event(sandbox: &str, previous_phase: Option<&str>) -> WatchEvent {
     WatchEvent::new(
         sandbox,
         EventPayload::SandboxStateChange(LifecycleEvent {
             phase: "deleted".to_owned(),
-            previous_phase: Some("ready".to_owned()),
+            previous_phase: previous_phase.map(|s| s.to_owned()),
         }),
     )
 }
@@ -286,8 +295,8 @@ mod tests {
         drop(sender);
 
         let received = stream.next_event().await.expect("should receive event");
-        assert_eq!(received.sandbox, "test-sb");
-        assert_eq!(received.event_type, "command");
+        assert_eq!(received.sandbox(), "test-sb");
+        assert_eq!(received.event_type(), "command");
     }
 
     #[tokio::test]
@@ -324,7 +333,7 @@ mod tests {
         drop(sender);
 
         let received = stream.next_event().await.expect("should receive network event");
-        assert_eq!(received.event_type, "network");
+        assert_eq!(received.event_type(), "network");
     }
 
     #[test]
@@ -418,11 +427,23 @@ mod tests {
 
     #[test]
     fn sandbox_deleted_event_has_correct_shape() {
-        let event = sandbox_deleted_event("doomed");
-        assert_eq!(event.event_type, "lifecycle");
-        assert_eq!(event.sandbox, "doomed");
-        if let EventPayload::SandboxStateChange(lc) = &event.payload {
+        let event = sandbox_deleted_event("doomed", Some("ready"));
+        assert_eq!(event.event_type(), "lifecycle");
+        assert_eq!(event.sandbox(), "doomed");
+        if let EventPayload::SandboxStateChange(lc) = event.payload() {
             assert_eq!(lc.phase, "deleted");
+            assert_eq!(lc.previous_phase.as_deref(), Some("ready"));
+        } else {
+            panic!("expected SandboxStateChange");
+        }
+    }
+
+    #[test]
+    fn sandbox_deleted_event_accepts_none_previous_phase() {
+        let event = sandbox_deleted_event("doomed", None);
+        if let EventPayload::SandboxStateChange(lc) = event.payload() {
+            assert_eq!(lc.phase, "deleted");
+            assert_eq!(lc.previous_phase, None);
         } else {
             panic!("expected SandboxStateChange");
         }

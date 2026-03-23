@@ -56,7 +56,11 @@ impl EventFilter {
                     filter: token.to_owned(),
                 });
             }
-            types.push(token.to_owned());
+            // OBS-F004: Deduplicate parsed types to avoid duplicate filter entries.
+            let token_owned = token.to_owned();
+            if !types.contains(&token_owned) {
+                types.push(token_owned);
+            }
         }
 
         Ok(Self { types })
@@ -83,7 +87,7 @@ impl EventFilter {
         if self.types.is_empty() {
             return true;
         }
-        self.types.iter().any(|t| t == &event.event_type)
+        self.types.iter().any(|t| t == event.event_type())
     }
 
     /// Returns true if no filtering is applied (all events pass).
@@ -131,11 +135,32 @@ mod tests {
                 phase: "ready".to_owned(),
                 previous_phase: None,
             }),
-            _ => EventPayload::WatchMeta(WatchMetaEvent {
+            "inference" => EventPayload::Inference(crate::inference_log::InferenceEvent {
+                request_id: "req-test".to_owned(),
+                timestamp: chrono::Utc::now(),
+                model_provider: "openai".to_owned(),
+                model: "gpt-4".to_owned(),
+                prompt: "test".to_owned(),
+                response: "test".to_owned(),
+                prompt_tokens: None,
+                completion_tokens: None,
+                latency_ms: 100,
+                status_code: 200,
+                error: false,
+                truncated: false,
+            }),
+            "mcp" => EventPayload::McpToolCall(McpToolCallEvent {
+                tool_name: "read_file".to_owned(),
+                server: "filesystem".to_owned(),
+                duration_ms: Some(50),
+                success: Some(true),
+            }),
+            "watch" => EventPayload::WatchMeta(WatchMetaEvent {
                 overflow_count: None,
                 parse_error_offset: None,
                 message: "test".to_owned(),
             }),
+            _ => panic!("unknown event type in test helper: {event_type}"),
         };
         WatchEvent::new("sb", payload)
     }
@@ -230,5 +255,36 @@ mod tests {
                 "InvalidFilter error message should mention '{t}', got: {msg}"
             );
         }
+    }
+
+    // --- OBS-F007: Tests for inference, mcp, and watch event types ---
+
+    #[test]
+    fn parse_inference_filter_matches_inference_events() {
+        let filter = EventFilter::parse("inference").expect("valid filter");
+        assert!(filter.matches(&make_event("inference")));
+        assert!(!filter.matches(&make_event("command")));
+    }
+
+    #[test]
+    fn parse_mcp_filter_matches_mcp_events() {
+        let filter = EventFilter::parse("mcp").expect("valid filter");
+        assert!(filter.matches(&make_event("mcp")));
+        assert!(!filter.matches(&make_event("network")));
+    }
+
+    #[test]
+    fn parse_watch_filter_matches_watch_events() {
+        let filter = EventFilter::parse("watch").expect("valid filter");
+        assert!(filter.matches(&make_event("watch")));
+        assert!(!filter.matches(&make_event("lifecycle")));
+    }
+
+    #[test]
+    fn parse_deduplicates_repeated_types() {
+        let filter = EventFilter::parse("command,command,network,command").expect("valid filter");
+        assert_eq!(filter.active_types().len(), 2);
+        assert!(filter.matches(&make_event("command")));
+        assert!(filter.matches(&make_event("network")));
     }
 }
