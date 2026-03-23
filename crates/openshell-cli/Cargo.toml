@@ -86,7 +86,7 @@ dev-settings = ["openshell-core/dev-settings"]
 
 [dev-dependencies]
 futures = { workspace = true }
-rcgen = { version = "0.13", features = ["crypto", "pem"] }
+rcgen = { version = "0.14", features = ["crypto", "pem"] }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 temp-env = "0.3"
