@@ -1,0 +1,77 @@
+name: Coverage
+on:
+  push:
+    branches: [develop, main]
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    branches: [develop, main]
+    paths-ignore: ['**.md', 'docs/**']
+
+permissions:
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage (codecov)
+        run: cargo llvm-cov --workspace --codecov --output-path codecov.json
+
+      - name: Generate coverage (text summary)
+        id: coverage-text
+        run: |
+          SUMMARY=$(cargo llvm-cov --workspace --text 2>&1)
+          echo "$SUMMARY"
+          # Extract total line for the comment
+          TOTAL=$(echo "$SUMMARY" | tail -1)
+          {
+            echo 'summary<<EOF'
+            echo "$SUMMARY"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage
+          message: |
+            ## Coverage Report
+
+            <details>
+            <summary>Coverage details</summary>
+
+            ```
+            ${{ steps.coverage-text.outputs.summary }}
+            ```
+
+            </details>
+
+      - name: Upload codecov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codecov-report
+          path: codecov.json
+          retention-days: 7

@@ -1,0 +1,97 @@
+name: Upstream Sync Check
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Monday 9am UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check-drift:
+    name: Check Upstream Drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/NVIDIA/OpenShell.git
+          git fetch upstream main
+
+      - name: Check drift and conflicts
+        id: drift
+        run: |
+          BEHIND=$(git rev-list develop..upstream/main --count)
+          echo "commits_behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "Commits behind upstream: $BEHIND"
+
+          CONFLICTS=""
+          if [ "$BEHIND" -gt 0 ]; then
+            MERGE_OUTPUT=$(git merge --no-commit --no-ff upstream/main 2>&1) || true
+            if echo "$MERGE_OUTPUT" | grep -q "CONFLICT"; then
+              CONFLICTS=$(echo "$MERGE_OUTPUT" | grep "CONFLICT" || true)
+              echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            fi
+            git merge --abort 2>/dev/null || true
+          else
+            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Write conflicts to file for multiline output
+          echo "$CONFLICTS" > /tmp/conflicts.txt
+
+      - name: Create or update issue
+        if: steps.drift.outputs.commits_behind != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEHIND: ${{ steps.drift.outputs.commits_behind }}
+          HAS_CONFLICTS: ${{ steps.drift.outputs.has_conflicts }}
+        run: |
+          CONFLICTS=$(cat /tmp/conflicts.txt)
+          TITLE="Upstream sync: ${BEHIND} commits behind"
+
+          BODY="## Upstream Drift Report
+
+          **Commits behind:** ${BEHIND}
+          **Has merge conflicts:** ${HAS_CONFLICTS}
+          **Upstream:** \`NVIDIA/OpenShell\` \`main\` branch
+          **Checked:** $(date -u '+%Y-%m-%d %H:%M UTC')
+          "
+
+          if [ "$HAS_CONFLICTS" = "true" ]; then
+            BODY="${BODY}
+          ### Merge Conflicts
+
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
+          "
+          fi
+
+          BODY="${BODY}
+          ### Next Steps
+
+          1. Create a branch: \`git checkout -b chore/upstream-sync develop\`
+          2. Merge upstream: \`git merge upstream/main\`
+          3. Resolve any conflicts
+          4. Run full test suite
+          5. PR into \`develop\`
+          "
+
+          # Close existing upstream sync issues
+          EXISTING=$(gh issue list --label "upstream-sync" --state open --json number --jq '.[].number' 2>/dev/null || true)
+          for num in $EXISTING; do
+            gh issue close "$num" --comment "Superseded by new sync check"
+          done
+
+          # Create new issue
+          gh issue create \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "upstream-sync"

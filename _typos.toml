@@ -1,0 +1,11 @@
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "*.svg",
+    "e2e/",
+    "proto/",
+    "python/openshell/_proto/",
+]
+
+[default.extend-words]
+# Technical terms that typos flags incorrectly

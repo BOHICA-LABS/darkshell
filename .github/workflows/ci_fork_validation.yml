@@ -1,0 +1,81 @@
+name: Fork Validation
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  validate-fork:
+    name: Validate Fork Integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: fork-validation
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/NVIDIA/OpenShell.git
+          git fetch upstream main
+
+      - name: Verify crate names match upstream convention
+        run: |
+          echo "Checking that all openshell crates retain upstream names..."
+          names=$(grep '^name = ' crates/openshell-*/Cargo.toml)
+          echo "$names"
+          if echo "$names" | grep -v '^name = "openshell-'; then
+            echo "::error::Found openshell crate with non-upstream name"
+            exit 1
+          fi
+          echo "All openshell crate names match upstream convention"
+
+      - name: Verify no unsafe in darkshell crates
+        run: |
+          echo "Checking for unsafe code in darkshell crates..."
+          if grep -r 'unsafe ' crates/darkshell-*/src/ --include='*.rs' -l 2>/dev/null; then
+            echo "::error::Found unsafe code in darkshell crates"
+            exit 1
+          fi
+          echo "No unsafe code found in darkshell crates"
+
+      - name: Verify binary name
+        run: |
+          cargo build -p openshell-cli
+          if [ ! -f target/debug/darkshell ]; then
+            echo "::error::Binary 'darkshell' not found after building openshell-cli"
+            exit 1
+          fi
+          echo "Binary 'darkshell' exists"
+
+      - name: Verify feature flags
+        run: |
+          echo "Building openshell-sandbox with no features..."
+          cargo build -p openshell-sandbox
+          echo "Checking openshell-sandbox with darkshell-inference-log feature..."
+          cargo check -p openshell-sandbox --features darkshell-inference-log
+
+      - name: Verify sandbox diff is minimal
+        run: |
+          echo "Checking files changed in openshell-sandbox vs upstream..."
+          changed_files=$(git diff upstream/main -- crates/openshell-sandbox/src/ | grep '^diff --git' | sed 's|.*b/||' || true)
+          echo "Changed files:"
+          echo "$changed_files"
+          for file in $changed_files; do
+            basename=$(basename "$file")
+            if [ "$basename" != "proxy.rs" ] && [ "$basename" != "Cargo.toml" ]; then
+              echo "::warning::Unexpected change in openshell-sandbox: $file"
+            fi
+          done
