@@ -8,7 +8,7 @@ use clap_complete::engine::ArgValueCompleter;
 use clap_complete::env::CompleteEnv;
 use miette::Result;
 use owo_colors::OwoColorize;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use openshell_bootstrap::{
     edge_token::load_edge_token, get_gateway_metadata, list_gateways, load_active_gateway,
@@ -1245,6 +1245,20 @@ enum SandboxCommands {
         /// Disable `.gitignore` filtering (uploads everything).
         #[arg(long)]
         no_git_ignore: bool,
+
+        /// Use rsync for delta uploads (transfers only changed files).
+        ///
+        /// Requires rsync to be installed in the sandbox image.
+        /// Falls back to tar upload with a warning if rsync is absent.
+        #[arg(long)]
+        rsync: bool,
+
+        /// Preserve symlinks as-is instead of following them.
+        ///
+        /// Only applies when `--rsync` is used. By default, rsync follows
+        /// symlinks (`-L`) and uploads the target file content.
+        #[arg(long, requires = "rsync")]
+        no_follow_symlinks: bool,
     },
 
     /// Download files from a sandbox.
@@ -2196,6 +2210,8 @@ async fn main() -> Result<()> {
                     local_path,
                     dest,
                     no_git_ignore,
+                    rsync,
+                    no_follow_symlinks,
                 } => {
                     let ctx = resolve_gateway(&cli.gateway, &cli.gateway_endpoint)?;
                     let mut tls = tls.with_gateway_name(&ctx.name);
@@ -2208,6 +2224,31 @@ async fn main() -> Result<()> {
                             local.display()
                         ));
                     }
+
+                    // DS-002: rsync delta upload path.
+                    if rsync {
+                        let options = run::RsyncUploadOptions {
+                            follow_symlinks: !no_follow_symlinks,
+                            progress: std::io::stderr().is_terminal(),
+                        };
+                        eprintln!(
+                            "Uploading {} -> sandbox:{} (rsync)",
+                            local.display(),
+                            sandbox_dest
+                        );
+                        run::sandbox_sync_up_rsync_or_tar(
+                            &ctx.endpoint,
+                            &name,
+                            local,
+                            sandbox_dest,
+                            &tls,
+                            &options,
+                        )
+                        .await?;
+                        eprintln!("{} Upload complete (rsync)", "✓".green().bold());
+                        return Ok(());
+                    }
+
                     eprintln!("Uploading {} -> sandbox:{}", local.display(), sandbox_dest);
                     if !no_git_ignore && let Ok((base_dir, files)) = run::git_sync_files(local) {
                         run::sandbox_sync_up_files(
@@ -2728,6 +2769,109 @@ mod tests {
             names.iter().any(|name| name.contains("sample.txt")),
             "expected path completion for upload local_path, got: {names:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // DS-002: --rsync and --no-follow-symlinks CLI flag tests
+    // -----------------------------------------------------------------------
+
+    /// AC-001: `--rsync` flag is accepted on upload subcommand.
+    #[test]
+    fn upload_rsync_flag_accepted() {
+        let result = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "upload",
+            "demo",
+            "./src",
+            "--rsync",
+        ]);
+        assert!(result.is_ok(), "should parse --rsync flag: {result:?}");
+        if let Ok(Cli {
+            command:
+                Some(Commands::Sandbox {
+                    command: Some(SandboxCommands::Upload { rsync, .. }),
+                    ..
+                }),
+            ..
+        }) = result
+        {
+            assert!(rsync, "rsync flag must be true");
+        }
+    }
+
+    /// AC-005: `--no-follow-symlinks` requires `--rsync`.
+    #[test]
+    fn upload_no_follow_symlinks_requires_rsync() {
+        let result = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "upload",
+            "demo",
+            "./src",
+            "--no-follow-symlinks",
+        ]);
+        assert!(
+            result.is_err(),
+            "--no-follow-symlinks without --rsync should fail"
+        );
+    }
+
+    /// AC-005: `--no-follow-symlinks` is accepted with `--rsync`.
+    #[test]
+    fn upload_no_follow_symlinks_with_rsync_accepted() {
+        let result = Cli::try_parse_from([
+            "darkshell",
+            "sandbox",
+            "upload",
+            "demo",
+            "./src",
+            "--rsync",
+            "--no-follow-symlinks",
+        ]);
+        assert!(
+            result.is_ok(),
+            "should parse --rsync --no-follow-symlinks: {result:?}"
+        );
+        if let Ok(Cli {
+            command:
+                Some(Commands::Sandbox {
+                    command:
+                        Some(SandboxCommands::Upload {
+                            rsync,
+                            no_follow_symlinks,
+                            ..
+                        }),
+                    ..
+                }),
+            ..
+        }) = result
+        {
+            assert!(rsync, "rsync flag must be true");
+            assert!(no_follow_symlinks, "no_follow_symlinks flag must be true");
+        }
+    }
+
+    /// AC-006: Upload without --rsync flag still works (no regression).
+    #[test]
+    fn upload_without_rsync_flag_uses_tar() {
+        let result =
+            Cli::try_parse_from(["darkshell", "sandbox", "upload", "demo", "./src"]);
+        assert!(
+            result.is_ok(),
+            "upload without --rsync should still parse: {result:?}"
+        );
+        if let Ok(Cli {
+            command:
+                Some(Commands::Sandbox {
+                    command: Some(SandboxCommands::Upload { rsync, .. }),
+                    ..
+                }),
+            ..
+        }) = result
+        {
+            assert!(!rsync, "rsync flag must be false by default");
+        }
     }
 
     #[test]
