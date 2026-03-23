@@ -1008,6 +1008,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2993,6 +2994,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "chrono",
  "clap",
  "darkshell-observe",
  "hex",
