@@ -1508,4 +1508,99 @@ spec:
             "valid streamable-http server should not produce errors: {mcp_errors:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // DS-011: In-sandbox MCP server blueprint validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_valid_in_sandbox_server() {
+        let yaml = r#"
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: test
+spec:
+  image: ubuntu:22.04
+  mcp_servers:
+    - name: tally
+      transport: in-sandbox
+      command: /usr/local/bin/mcp-tally
+"#;
+        let bp = parse_blueprint(yaml).expect("should parse");
+        let result = validate(&bp);
+
+        let mcp_errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.field.starts_with("spec.mcp_servers"))
+            .collect();
+        assert!(
+            mcp_errors.is_empty(),
+            "valid in-sandbox server should not produce errors: {mcp_errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_in_sandbox_transport_rejects_env_with_actionable_message() {
+        let yaml = r#"
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: test
+spec:
+  image: ubuntu:22.04
+  mcp_servers:
+    - name: bad-insandbox
+      transport: in-sandbox
+      command: /usr/local/bin/mcp-tally
+      env:
+        - GITHUB_TOKEN
+        - OPENAI_API_KEY
+"#;
+        let bp = parse_blueprint(yaml).expect("should parse");
+        let result = validate(&bp);
+
+        let env_errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.field.contains(".env"))
+            .collect();
+        assert!(
+            !env_errors.is_empty(),
+            "in-sandbox transport with env should produce an error"
+        );
+        let msg = &env_errors[0].message;
+        assert!(
+            msg.contains("credentials are not injected"),
+            "error should explain why env is forbidden: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_in_sandbox_transport_requires_command() {
+        let yaml = r#"
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: test
+spec:
+  image: ubuntu:22.04
+  mcp_servers:
+    - name: no-cmd
+      transport: in-sandbox
+"#;
+        let bp = parse_blueprint(yaml).expect("should parse");
+        let result = validate(&bp);
+
+        let cmd_errors: Vec<_> = result
+            .errors
+            .iter()
+            .filter(|e| e.field.contains(".command"))
+            .collect();
+        assert!(
+            !cmd_errors.is_empty(),
+            "in-sandbox transport without command should produce an error"
+        );
+    }
 }
