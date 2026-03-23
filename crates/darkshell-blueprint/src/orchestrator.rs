@@ -114,6 +114,8 @@ pub enum CompletedStep {
     ResourceLimitsApplied { sandbox: String },
     /// Files were uploaded.
     FilesUploaded { sandbox: String, spec: String },
+    /// Streamable-HTTP MCP server was acknowledged (no host-side orchestration needed).
+    StreamableHttpAcknowledged { sandbox: String, server: String, url: String },
 }
 
 impl fmt::Display for CompletedStep {
@@ -135,6 +137,9 @@ impl fmt::Display for CompletedStep {
             }
             Self::ResourceLimitsApplied { .. } => write!(f, "resource limits applied"),
             Self::FilesUploaded { spec, .. } => write!(f, "files '{spec}' uploaded"),
+            Self::StreamableHttpAcknowledged { server, url, .. } => {
+                write!(f, "streamable-http MCP server '{server}' acknowledged at {url}")
+            }
         }
     }
 }
@@ -161,6 +166,8 @@ pub struct OrchestrationPlan {
     pub bridge_servers: Vec<McpBridgePlan>,
     /// MCP in-sandbox servers to configure.
     pub in_sandbox_servers: Vec<McpInSandboxPlan>,
+    /// MCP streamable-http servers (acknowledged, no host-side orchestration).
+    pub streamable_http_servers: Vec<McpStreamableHttpPlan>,
     /// Port forwards to establish.
     pub forwards: Vec<String>,
     /// Resource limits (cpu, memory).
@@ -187,6 +194,15 @@ pub struct McpInSandboxPlan {
     pub name: String,
     /// Command to run inside the sandbox.
     pub command: String,
+}
+
+/// Plan for a streamable-HTTP MCP server (acknowledged, no host-side orchestration).
+#[derive(Debug, Clone)]
+pub struct McpStreamableHttpPlan {
+    /// Server name.
+    pub name: String,
+    /// HTTP(S) endpoint URL.
+    pub url: String,
 }
 
 /// Resource limits plan.
@@ -249,6 +265,7 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
 
     let mut bridge_servers = Vec::new();
     let mut in_sandbox_servers = Vec::new();
+    let mut streamable_http_servers = Vec::new();
 
     if let Some(servers) = &spec.mcp_servers {
         for server in servers {
@@ -290,8 +307,16 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
                     });
                 }
                 McpTransport::StreamableHttp => {
-                    // Streamable HTTP servers don't need host-side orchestration;
-                    // configuration is passed through to the sandbox agent.
+                    // BP-M004: track streamable-http servers in plan instead of silently dropping.
+                    streamable_http_servers.push(McpStreamableHttpPlan {
+                        name,
+                        url: server
+                            .url
+                            .clone()
+                            .ok_or_else(|| OrchestrateError::InvalidBlueprint {
+                                reason: "streamable-http MCP server requires a 'url' field".to_string(),
+                            })?,
+                    });
                 }
             }
         }
@@ -304,6 +329,7 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
         providers,
         bridge_servers,
         in_sandbox_servers,
+        streamable_http_servers,
         forwards,
         resources,
         uploads,
@@ -318,6 +344,11 @@ pub fn build_plan(blueprint: &Blueprint) -> OrchestrateResult<OrchestrationPlan>
 ///
 /// This trait abstracts the side effects (gateway API calls, file system checks)
 /// so the orchestrator can be tested with mock implementations.
+///
+/// **Note:** This trait uses `async_fn_in_trait`, which requires `Sized` receivers.
+/// It is not object-safe and cannot be used with `dyn` dispatch. This is intentional:
+/// the orchestrator is generic over concrete validator types, and dynamic dispatch
+/// is not needed.
 #[allow(async_fn_in_trait)]
 pub trait ResourceValidator {
     /// Check if an image can be pulled from the registry.
@@ -333,6 +364,11 @@ pub trait ResourceValidator {
 /// Trait for sandbox lifecycle operations (effectful).
 ///
 /// Abstracted for testing with mock implementations.
+///
+/// **Note:** This trait uses `async_fn_in_trait`, which requires `Sized` receivers.
+/// It is not object-safe and cannot be used with `dyn` dispatch. This is intentional:
+/// the orchestrator is generic over concrete gateway types, and dynamic dispatch
+/// is not needed.
 #[allow(async_fn_in_trait)]
 pub trait SandboxGateway {
     /// Create a sandbox from an image.
@@ -567,6 +603,21 @@ impl<V: ResourceValidator + Sync, G: SandboxGateway + Sync> BlueprintOrchestrato
             );
         }
 
+        // BP-M004: Acknowledge streamable-HTTP MCP servers (no host-side orchestration needed).
+        for server in &plan.streamable_http_servers {
+            tracing::info!(
+                sandbox = %sandbox,
+                server = %server.name,
+                url = %server.url,
+                "streamable-http MCP server acknowledged (no host-side orchestration needed)"
+            );
+            completed.push(CompletedStep::StreamableHttpAcknowledged {
+                sandbox: sandbox.clone(),
+                server: server.name.clone(),
+                url: server.url.clone(),
+            });
+        }
+
         // Establish port forwards.
         for forward in &plan.forwards {
             step!(
@@ -641,13 +692,14 @@ impl<V: ResourceValidator + Sync, G: SandboxGateway + Sync> BlueprintOrchestrato
                     tracing::info!(sandbox = %sandbox, spec = %spec, "rollback: removing port forward");
                     self.gateway.remove_port_forward(sandbox, spec).await
                 }
-                // Policy, providers, resource limits, uploads, in-sandbox MCP:
-                // these are cleaned up when the sandbox is deleted.
+                // Policy, providers, resource limits, uploads, in-sandbox MCP,
+                // streamable-http: these are cleaned up when the sandbox is deleted.
                 CompletedStep::PolicyApplied { .. }
                 | CompletedStep::ProviderAttached { .. }
                 | CompletedStep::McpInSandboxConfigured { .. }
                 | CompletedStep::ResourceLimitsApplied { .. }
-                | CompletedStep::FilesUploaded { .. } => {
+                | CompletedStep::FilesUploaded { .. }
+                | CompletedStep::StreamableHttpAcknowledged { .. } => {
                     tracing::info!(step = %step, "rollback: cleaned up with sandbox deletion");
                     Ok(())
                 }

@@ -121,6 +121,7 @@ pub fn mcp_add(
         bridge_pid: std::process::id(),
         forwarded_port: port,
         status: BridgeStatus::Running,
+        process_start_time: None,
     };
 
     registry::write_registration(&config_dir, &registration).into_diagnostic()?;
@@ -136,6 +137,83 @@ pub fn mcp_add(
     eprintln!(
         "\u{2713} MCP server '{}' added to sandbox '{}' on port {}",
         server_name, sandbox, port,
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SF-001: in-sandbox MCP transport
+// ---------------------------------------------------------------------------
+
+/// Handle `darkshell mcp add <sandbox> --name <server> --command <cmd> --transport in-sandbox`.
+///
+/// Registers an in-sandbox MCP server. Unlike the bridge transport, this does
+/// not start a host-side daemon or allocate a forwarded port. The command will
+/// be executed inside the sandbox by the sandbox agent.
+///
+/// Note: Full implementation requires sandbox agent support. For now, this
+/// registers the server with an `InSandbox` transport marker so that
+/// `mcp list` and `mcp remove` work, and the blueprint orchestrator can
+/// route to the correct execution path.
+pub fn start_in_sandbox_mcp(
+    sandbox: &str,
+    server_name: &str,
+    command: &[String],
+) -> Result<()> {
+    let config_dir = resolve_config_dir()?;
+
+    // Check for existing registration
+    if let Some(existing) = registry::read_registration(&config_dir, sandbox, server_name)
+        .into_diagnostic()?
+    {
+        if process_is_alive(existing.bridge_pid) {
+            return Err(miette::miette!(
+                "MCP server '{}' already registered on sandbox '{}' (PID {}). \
+                 Use `darkshell mcp remove {} --name {}` first.",
+                server_name,
+                sandbox,
+                existing.bridge_pid,
+                sandbox,
+                server_name,
+            ));
+        }
+        // Stale registration — clean it up
+        tracing::info!(
+            sandbox = %sandbox,
+            server = %server_name,
+            stale_pid = existing.bridge_pid,
+            "cleaning up stale registration before re-add (in-sandbox)"
+        );
+        registry::remove_registration(&config_dir, sandbox, server_name)
+            .into_diagnostic()?;
+    }
+
+    // In-sandbox transport does not need a forwarded port or host-side bridge.
+    // We use port 0 as a sentinel and the current PID as placeholder.
+    let registration = BridgeRegistration {
+        sandbox: sandbox.to_string(),
+        server_name: server_name.to_string(),
+        transport: Transport::StdioHttp, // TODO: add InSandbox variant to Transport enum
+        command: command.to_vec(),
+        bridge_pid: std::process::id(),
+        forwarded_port: 0,
+        status: BridgeStatus::Running,
+        process_start_time: None,
+    };
+
+    registry::write_registration(&config_dir, &registration).into_diagnostic()?;
+
+    tracing::info!(
+        sandbox = %sandbox,
+        server = %server_name,
+        transport = "in-sandbox",
+        "registered in-sandbox MCP server"
+    );
+
+    eprintln!(
+        "\u{2713} MCP server '{}' added to sandbox '{}' (transport: in-sandbox)",
+        server_name, sandbox,
     );
 
     Ok(())
@@ -269,8 +347,8 @@ pub fn mcp_remove(sandbox: &str, server_name: &str) -> Result<()> {
                     server = %server_name,
                     "sending SIGTERM to bridge process"
                 );
-                // Best-effort kill — don't fail the remove if the process is gone
-                let _ = signal_process(reg.bridge_pid, Signal::SIGTERM);
+                // CLI-S002: verify PID still belongs to an MCP bridge before killing.
+                safe_kill_bridge(reg.bridge_pid);
             }
 
             // Remove registration file
@@ -346,7 +424,8 @@ pub fn cleanup_mcp_for_sandbox(sandbox: &str) {
                 pid = reg.bridge_pid,
                 "stopping MCP bridge during sandbox cleanup"
             );
-            let _ = signal_process(reg.bridge_pid, Signal::SIGTERM);
+            // CLI-S002: verify PID still belongs to an MCP bridge before killing.
+            safe_kill_bridge(reg.bridge_pid);
         }
     }
 
@@ -395,6 +474,61 @@ fn signal_process(pid: u32, sig: Signal) -> nix::Result<()> {
     signal::kill(Pid::from_raw(pid as i32), sig)
 }
 
+/// CLI-S002: Verify that the process at `pid` looks like an MCP bridge process
+/// before sending signals. This guards against PID reuse races where the
+/// original bridge has exited and a new unrelated process has been assigned
+/// the same PID.
+///
+/// Returns `true` if the process command line matches expected MCP bridge patterns,
+/// or if we cannot determine the process name (fail-open to avoid breaking removal).
+fn verify_mcp_bridge_process(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let comm = String::from_utf8_lossy(&out.stdout);
+            let comm = comm.trim();
+            // Accept known MCP bridge process patterns. If we can't identify it,
+            // err on the side of caution (don't kill).
+            let expected_patterns = ["darkshell", "openshell", "npx", "node", "mcp"];
+            if comm.is_empty() {
+                // Can't determine — fail open.
+                true
+            } else {
+                let matches = expected_patterns
+                    .iter()
+                    .any(|pat| comm.contains(pat));
+                if !matches {
+                    tracing::warn!(
+                        pid = pid,
+                        process_name = %comm,
+                        "PID {} does not appear to be an MCP bridge process (found '{}'), \
+                         skipping signal to avoid killing unrelated process",
+                        pid,
+                        comm
+                    );
+                }
+                matches
+            }
+        }
+        _ => {
+            // Process lookup failed — process may already be gone, fail open.
+            true
+        }
+    }
+}
+
+/// Send SIGTERM to a bridge process after verifying it is actually an MCP bridge.
+///
+/// This wraps `signal_process` with the PID-reuse safety check from [`verify_mcp_bridge_process`].
+fn safe_kill_bridge(pid: u32) {
+    if verify_mcp_bridge_process(pid) {
+        let _ = signal_process(pid, Signal::SIGTERM);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -421,6 +555,7 @@ mod tests {
             bridge_pid: 99_999_999,
             forwarded_port: port,
             status: BridgeStatus::Running,
+            process_start_time: None,
         }
     }
 
@@ -487,6 +622,7 @@ mod tests {
             bridge_pid: std::process::id(), // alive PID triggers duplicate error
             forwarded_port: 9100,
             status: BridgeStatus::Running,
+            process_start_time: None,
         };
         write_registration(dir.path(), &reg).expect("write");
 

@@ -143,6 +143,11 @@ pub struct ResourceSpec {
 // ---------------------------------------------------------------------------
 
 /// A validation error with field path, message, and optional line context.
+///
+/// **Note:** Line numbers are not included because `serde_yaml` does not preserve
+/// source locations after deserialization into typed structs. Adding line numbers
+/// would require a custom YAML parser or a two-pass approach (raw YAML AST +
+/// typed deserialization), which is deferred to a future enhancement.
 #[derive(Debug, Clone, Error)]
 #[error("{field}: {message}")]
 pub struct ValidationError {
@@ -185,6 +190,13 @@ pub enum ParseError {
     #[error("Empty blueprint file. See `darkshell blueprint --help` for format.")]
     EmptyInput,
 
+    /// The input exceeds the maximum allowed size.
+    #[error(
+        "Blueprint input is {size} bytes, exceeding the {max} byte limit. \
+         Reduce the blueprint size or split into multiple files."
+    )]
+    InputTooLarge { size: usize, max: usize },
+
     /// The YAML was not a mapping (e.g., it was a list or scalar).
     #[error(
         "Blueprint must be a YAML mapping, not a {actual_type}. Expected `apiVersion`, `kind`, `metadata`, `spec`."
@@ -212,13 +224,25 @@ pub enum ParseError {
 /// # Errors
 ///
 /// Returns `ParseError` for empty input, non-mapping YAML, or syntax errors.
+/// Maximum blueprint input size (1 MB). Protects against excessive memory
+/// usage from very large or malicious inputs (e.g., YAML anchor bombs).
+pub const MAX_BLUEPRINT_SIZE: usize = 1_048_576;
+
 pub fn parse_blueprint(yaml: &str) -> Result<Blueprint, ParseError> {
+    if yaml.len() > MAX_BLUEPRINT_SIZE {
+        return Err(ParseError::InputTooLarge {
+            size: yaml.len(),
+            max: MAX_BLUEPRINT_SIZE,
+        });
+    }
+
     let trimmed = yaml.trim();
     if trimmed.is_empty() {
         return Err(ParseError::EmptyInput);
     }
 
-    // First, check if the YAML is a mapping (not a list or scalar).
+    // Parse once into a generic Value to check structure, then deserialize
+    // from that same Value (BP-M006: avoid double YAML parse).
     let value: serde_yaml::Value = serde_yaml::from_str(trimmed)?;
     if !value.is_mapping() {
         let actual_type = if value.is_sequence() {
@@ -237,7 +261,7 @@ pub fn parse_blueprint(yaml: &str) -> Result<Blueprint, ParseError> {
         return Err(ParseError::NotAMapping { actual_type });
     }
 
-    let blueprint: Blueprint = serde_yaml::from_str(trimmed)?;
+    let blueprint: Blueprint = serde_yaml::from_value(value)?;
     Ok(blueprint)
 }
 
@@ -340,13 +364,36 @@ fn validate_metadata(
                     });
                 }
                 Some(name) => {
-                    // EC-CUSTOM-003: name must match [a-z0-9-].
+                    // BP-M001: name must start and end with alphanumeric,
+                    // contain only [a-z0-9-], and be at most 63 characters.
+                    // Pattern: [a-z0-9]([a-z0-9-]*[a-z0-9])?
+                    if name.len() > 63 {
+                        errors.push(ValidationError {
+                            field: "metadata.name".to_owned(),
+                            message: format!(
+                                "Blueprint name '{name}' is {} characters long. \
+                                 Maximum length is 63 characters.",
+                                name.len()
+                            ),
+                        });
+                    }
                     if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
                         errors.push(ValidationError {
                             field: "metadata.name".to_owned(),
                             message: format!(
                                 "Blueprint name '{name}' contains invalid characters. \
-                                 Sandbox names must match [a-z0-9-]."
+                                 Sandbox names must match [a-z0-9]([a-z0-9-]*[a-z0-9])?."
+                            ),
+                        });
+                    } else if !name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                        || !name.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    {
+                        errors.push(ValidationError {
+                            field: "metadata.name".to_owned(),
+                            message: format!(
+                                "Blueprint name '{name}' must start and end with an \
+                                 alphanumeric character [a-z0-9]. Leading or trailing \
+                                 hyphens are not allowed."
                             ),
                         });
                     }
@@ -388,6 +435,28 @@ fn validate_spec(
                 Some(_) => {} // Valid (existence is a runtime check).
             }
 
+            // BP-M002: validate policy path.
+            if let Some(ref policy) = spec.policy {
+                if policy.contains("..") {
+                    warnings.push(ValidationWarning {
+                        field: "spec.policy".to_owned(),
+                        message: format!(
+                            "Policy path '{policy}' contains '..'. This may cause \
+                             unexpected behavior. Use a direct relative path instead."
+                        ),
+                    });
+                }
+                if policy.starts_with('/') {
+                    errors.push(ValidationError {
+                        field: "spec.policy".to_owned(),
+                        message: format!(
+                            "Policy path '{policy}' is absolute. Policy paths should be \
+                             relative to the blueprint file."
+                        ),
+                    });
+                }
+            }
+
             // Validate MCP servers.
             if let Some(servers) = &spec.mcp_servers {
                 validate_mcp_servers(servers, errors, warnings);
@@ -395,7 +464,7 @@ fn validate_spec(
 
             // Validate port forwards.
             if let Some(forwards) = &spec.forwards {
-                validate_forwards(forwards, errors);
+                validate_forwards(forwards, errors, warnings);
             }
 
             // Validate resources.
@@ -405,7 +474,7 @@ fn validate_spec(
 
             // Validate upload specs.
             if let Some(uploads) = &spec.upload {
-                validate_uploads(uploads, errors);
+                validate_uploads(uploads, errors, warnings);
             }
         }
     }
@@ -465,7 +534,7 @@ fn validate_mcp_servers(
                 });
             }
             Some(transport) => {
-                validate_mcp_transport(transport, server, &prefix, errors);
+                validate_mcp_transport(transport, server, &prefix, errors, warnings);
             }
         }
     }
@@ -476,7 +545,21 @@ fn validate_mcp_transport(
     server: &McpServerEntry,
     prefix: &str,
     errors: &mut Vec<ValidationError>,
+    warnings: &mut Vec<ValidationWarning>,
 ) {
+    // BP-H001: warn when command contains shell metacharacters.
+    if let Some(ref command) = server.command {
+        let shell_metacharacters = [";", "|", "&&", "$(", "`"];
+        if shell_metacharacters.iter().any(|mc| command.contains(mc)) {
+            warnings.push(ValidationWarning {
+                field: format!("{prefix}.command"),
+                message: "MCP server command contains shell metacharacters. \
+                          Consider using an array format to prevent shell interpretation."
+                    .to_owned(),
+            });
+        }
+    }
+
     match transport {
         McpTransport::Bridge => {
             // command required, url forbidden.
@@ -511,11 +594,40 @@ fn validate_mcp_transport(
         }
         McpTransport::StreamableHttp => {
             // url required, command forbidden.
-            if server.url.is_none() {
-                errors.push(ValidationError {
-                    field: format!("{prefix}.url"),
-                    message: "Transport 'streamable-http' requires 'url' field.".to_owned(),
-                });
+            match &server.url {
+                None => {
+                    errors.push(ValidationError {
+                        field: format!("{prefix}.url"),
+                        message: "Transport 'streamable-http' requires 'url' field.".to_owned(),
+                    });
+                }
+                Some(url) => {
+                    // BP-H003: validate URL scheme for streamable-http.
+                    let dangerous_schemes = ["file://", "ftp://", "javascript:"];
+                    if dangerous_schemes.iter().any(|s| url.starts_with(s)) {
+                        errors.push(ValidationError {
+                            field: format!("{prefix}.url"),
+                            message: format!(
+                                "URL scheme is not allowed for streamable-http transport. \
+                                 Only 'http://' and 'https://' are supported. Got: '{url}'."
+                            ),
+                        });
+                    } else if !url.starts_with("http://") && !url.starts_with("https://") {
+                        errors.push(ValidationError {
+                            field: format!("{prefix}.url"),
+                            message: format!(
+                                "URL must start with 'http://' or 'https://'. Got: '{url}'."
+                            ),
+                        });
+                    } else if url.starts_with("http://") {
+                        warnings.push(ValidationWarning {
+                            field: format!("{prefix}.url"),
+                            message: "MCP server URL uses insecure 'http://' scheme. \
+                                      Consider using 'https://' for production."
+                                .to_owned(),
+                        });
+                    }
+                }
             }
             if server.command.is_some() {
                 errors.push(ValidationError {
@@ -529,27 +641,49 @@ fn validate_mcp_transport(
     }
 }
 
-fn validate_forwards(forwards: &[String], errors: &mut Vec<ValidationError>) {
+fn validate_forwards(
+    forwards: &[String],
+    errors: &mut Vec<ValidationError>,
+    warnings: &mut Vec<ValidationWarning>,
+) {
     for (i, spec) in forwards.iter().enumerate() {
         let field = format!("spec.forwards[{i}]");
 
         // Format: [bind_address:]port
-        let port_str = if let Some((_bind, port)) = spec.rsplit_once(':') {
-            port
+        let (bind_addr, port_str) = if let Some((bind, port)) = spec.rsplit_once(':') {
+            (Some(bind), port)
         } else {
-            spec.as_str()
+            (None, spec.as_str())
         };
 
-        match port_str.parse::<u32>() {
-            Ok(port) if (1..=65535).contains(&port) => {} // Valid.
-            Ok(port) => {
-                errors.push(ValidationError {
-                    field,
+        // BP-M003: validate bind address format if present.
+        if let Some(addr) = bind_addr {
+            if !addr.is_empty()
+                && addr.parse::<std::net::Ipv4Addr>().is_err()
+                && addr.parse::<std::net::Ipv6Addr>().is_err()
+                && addr != "localhost"
+            {
+                warnings.push(ValidationWarning {
+                    field: field.clone(),
                     message: format!(
-                        "Port {port} is out of range. Must be 1-65535. Got: '{spec}'."
+                        "Bind address '{addr}' does not appear to be a valid IP address \
+                         or 'localhost'. Got: '{spec}'."
                     ),
                 });
             }
+        }
+
+        // BP-M003: parse as u16 directly instead of u32.
+        match port_str.parse::<u16>() {
+            Ok(0) => {
+                errors.push(ValidationError {
+                    field,
+                    message: format!(
+                        "Port 0 is out of range. Must be 1-65535. Got: '{spec}'."
+                    ),
+                });
+            }
+            Ok(_) => {} // Valid: 1-65535 (u16 range minus 0).
             Err(_) => {
                 errors.push(ValidationError {
                     field,
@@ -597,7 +731,14 @@ fn validate_resources(
     }
 }
 
-fn validate_uploads(uploads: &[String], errors: &mut Vec<ValidationError>) {
+fn validate_uploads(
+    uploads: &[String],
+    errors: &mut Vec<ValidationError>,
+    warnings: &mut Vec<ValidationWarning>,
+) {
+    /// System directories that should not be written to via upload.
+    const SYSTEM_DIRS: &[&str] = &["/etc", "/usr", "/bin", "/sbin"];
+
     for (i, spec) in uploads.iter().enumerate() {
         let field = format!("spec.upload[{i}]");
 
@@ -610,6 +751,46 @@ fn validate_uploads(uploads: &[String], errors: &mut Vec<ValidationError>) {
                     "Upload spec must be in format 'local:remote'. Got: '{spec}'."
                 ),
             });
+            continue;
+        }
+
+        // BP-H002: validate local and remote paths.
+        if let Some((local, remote)) = spec.split_once(':') {
+            // Reject local paths containing ".." (path traversal).
+            if local.contains("..") {
+                errors.push(ValidationError {
+                    field: field.clone(),
+                    message: format!(
+                        "Upload local path contains '..'. Path traversal is not allowed. \
+                         Use a direct relative path instead. Got: '{local}'."
+                    ),
+                });
+            }
+
+            // Warn on absolute local paths.
+            if local.starts_with('/') {
+                warnings.push(ValidationWarning {
+                    field: field.clone(),
+                    message: format!(
+                        "Upload local path '{local}' is absolute. Consider using a \
+                         relative path for portability."
+                    ),
+                });
+            }
+
+            // Reject remote paths writing to system directories.
+            for sys_dir in SYSTEM_DIRS {
+                if remote == *sys_dir || remote.starts_with(&format!("{sys_dir}/")) {
+                    errors.push(ValidationError {
+                        field: field.clone(),
+                        message: format!(
+                            "Upload remote path '{remote}' targets system directory '{sys_dir}'. \
+                             Writing to system directories is not allowed."
+                        ),
+                    });
+                    break;
+                }
+            }
         }
     }
 }
@@ -1270,7 +1451,7 @@ spec:
             .find(|e| e.field == "metadata.name")
             .expect("expected name validation error");
         assert!(
-            name_error.message.contains("[a-z0-9-]"),
+            name_error.message.contains("[a-z0-9]"),
             "error should show valid pattern: {}",
             name_error.message
         );
@@ -1601,6 +1782,79 @@ spec:
         assert!(
             !cmd_errors.is_empty(),
             "in-sandbox transport without command should produce an error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BP-L002 / BP-L003: Input size limit and YAML bomb protection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_oversized_input_rejected_with_actionable_error() {
+        let huge_input = "x".repeat(MAX_BLUEPRINT_SIZE + 1);
+        let err = parse_blueprint(&huge_input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeding"),
+            "error should mention size limit: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_yaml_anchor_bomb_handled_safely() {
+        // YAML anchor bomb: exponential expansion via aliases.
+        // serde_yaml may reject this, or our size limit catches the raw input.
+        // Either way, it must not cause excessive memory usage or panic.
+        let bomb = r#"
+a: &a ["lol","lol","lol","lol","lol","lol","lol","lol","lol"]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
+"#;
+        // This should either parse as an unknown-fields blueprint (not a valid
+        // blueprint, but parseable YAML) or fail with a parse/size error.
+        // The key assertion is that it does NOT panic or OOM.
+        let result = parse_blueprint(bomb);
+        match result {
+            Ok(bp) => {
+                // Parsed but won't validate — that's fine
+                let validation = validate(&bp);
+                assert!(
+                    !validation.errors.is_empty(),
+                    "anchor bomb should not produce a valid blueprint"
+                );
+            }
+            Err(_) => {
+                // Rejected at parse level — also fine
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // BP-L004: Empty list fields produce no errors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_list_fields_produce_no_errors() {
+        let yaml = r#"
+apiVersion: darkshell/v1
+kind: Blueprint
+metadata:
+  name: test
+spec:
+  image: ubuntu:22.04
+  mcp_servers: []
+  forwards: []
+  providers: []
+  upload: []
+"#;
+        let bp = parse_blueprint(yaml).expect("should parse");
+        let result = validate(&bp);
+
+        assert!(
+            result.errors.is_empty(),
+            "empty lists should produce no errors: {:?}",
+            result.errors
         );
     }
 }

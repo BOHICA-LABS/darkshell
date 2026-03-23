@@ -665,8 +665,9 @@ pub(crate) fn build_rsync_args(
     }
 
     // SSH transport via ProxyCommand (AC-002).
+    // CLI-S003: wrap proxy_command in single quotes to prevent shell interpretation.
     let ssh_command = format!(
-        "ssh -o ProxyCommand={} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null",
+        "ssh -o 'ProxyCommand={}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null",
         proxy_command
     );
     args.push("-e".to_string());
@@ -1201,15 +1202,17 @@ fn host_alias(name: &str) -> String {
     format!("openshell-{name}")
 }
 
-fn render_ssh_config(gateway: &str, name: &str) -> String {
-    let exe = std::env::current_exe().expect("failed to resolve OpenShell executable");
+fn render_ssh_config(gateway: &str, name: &str) -> Result<String> {
+    let exe = std::env::current_exe()
+        .into_diagnostic()
+        .wrap_err("failed to resolve OpenShell executable")?;
     let exe = shell_escape(&exe.to_string_lossy());
 
     let proxy_cmd = format!("{exe} ssh-proxy --gateway-name {gateway} --name {name}");
     let host_alias = host_alias(name);
-    format!(
+    Ok(format!(
         "Host {host_alias}\n    User sandbox\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    GlobalKnownHostsFile /dev/null\n    LogLevel ERROR\n    ProxyCommand {proxy_cmd}\n"
-    )
+    ))
 }
 
 fn openshell_ssh_config_path() -> Result<PathBuf> {
@@ -1343,7 +1346,7 @@ pub fn install_ssh_config(gateway: &str, name: &str) -> Result<PathBuf> {
     }
 
     let alias = host_alias(name);
-    let block = render_ssh_config(gateway, name);
+    let block = render_ssh_config(gateway, name)?;
     let contents = fs::read_to_string(&managed_config).unwrap_or_default();
     let updated = upsert_host_block(&contents, &alias, &block);
     fs::write(&managed_config, updated)
@@ -1390,8 +1393,9 @@ fn launch_editor_command(binary: &str, label: &str, remote_target: &str) -> Resu
 /// The `ProxyCommand` uses `--gateway-name` so that `ssh-proxy` resolves the
 /// gateway endpoint and TLS certificates from the gateway metadata directory
 /// (`~/.config/openshell/gateways/<name>/mtls/`).
-pub fn print_ssh_config(gateway: &str, name: &str) {
-    print!("{}", render_ssh_config(gateway, name));
+pub fn print_ssh_config(gateway: &str, name: &str) -> Result<()> {
+    print!("{}", render_ssh_config(gateway, name)?);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

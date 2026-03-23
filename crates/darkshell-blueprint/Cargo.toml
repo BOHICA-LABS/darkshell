@@ -15,6 +15,11 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# TODO(BP-M005): darkshell-mcp is not listed as a dependency here. The orchestrator
+# uses trait abstractions (ResourceValidator, SandboxGateway) instead of directly
+# depending on darkshell-mcp. The CLI layer is responsible for providing concrete
+# implementations that call into darkshell-mcp. This is an intentional architecture
+# deviation to keep the blueprint crate focused on schema validation and plan building.
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
