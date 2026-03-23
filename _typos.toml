@@ -9,6 +9,8 @@ extend-exclude = [
     "crates/openshell-ocsf/schemas/",
     # Upstream architecture docs use crate names like ratatui
     "architecture/",
+    # Upstream third-party notices contain Dutch legal text
+    "THIRD-PARTY-NOTICES",
 ]
 
 [default.extend-words]
