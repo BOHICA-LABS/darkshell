@@ -954,6 +954,127 @@ pub fn print_ssh_config(gateway: &str, name: &str) {
     print!("{}", render_ssh_config(gateway, name));
 }
 
+// ---------------------------------------------------------------------------
+// DS-011: In-sandbox stdio MCP server support
+// ---------------------------------------------------------------------------
+
+/// Known credential environment variable prefixes that must NOT be forwarded
+/// into the sandbox. In-sandbox MCP servers operate on the local filesystem
+/// only — they should never receive host-side API keys or tokens.
+const CREDENTIAL_ENV_PREFIXES: &[&str] = &[
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "AWS_",
+    "AZURE_",
+    "GCP_",
+    "GITHUB_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "HF_",
+];
+
+/// Check whether an environment variable name looks like a credential.
+///
+/// Returns `true` if the name matches any of the known credential prefixes
+/// (case-insensitive).
+pub fn is_credential_env(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    CREDENTIAL_ENV_PREFIXES
+        .iter()
+        .any(|prefix| upper.starts_with(prefix))
+}
+
+/// Build the command vector for launching an MCP server inside a sandbox.
+///
+/// The returned `Vec<String>` is suitable for passing to
+/// `sandbox_exec_captured` (from DS-007). If `working_dir` is provided, the
+/// command is wrapped in a `sh -c "cd <dir> && <command>"` invocation so the
+/// server starts in the requested directory.
+///
+/// # Errors
+///
+/// Returns an error if `server_command` is empty.
+pub fn build_in_sandbox_mcp_command(
+    server_command: &str,
+    working_dir: Option<&str>,
+) -> miette::Result<Vec<String>> {
+    if server_command.is_empty() {
+        return Err(miette::miette!(
+            "in-sandbox MCP server command must not be empty"
+        ));
+    }
+
+    let command = match working_dir {
+        Some(dir) => vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("cd {dir} && {server_command}"),
+        ],
+        None => vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            server_command.to_string(),
+        ],
+    };
+
+    Ok(command)
+}
+
+/// Validate that no credential environment variables are being passed to an
+/// in-sandbox MCP server.
+///
+/// In-sandbox servers inherit all sandbox restrictions (Landlock, seccomp,
+/// netns) and operate only on the sandbox filesystem. They must not receive
+/// host-side credentials.
+///
+/// # Errors
+///
+/// Returns an error listing the offending variable names if any credential
+/// env vars are detected.
+pub fn reject_credential_env_vars(env_vars: &[String]) -> miette::Result<()> {
+    let credentials: Vec<&String> = env_vars.iter().filter(|v| is_credential_env(v)).collect();
+    if !credentials.is_empty() {
+        let names = credentials
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(miette::miette!(
+            "in-sandbox MCP servers cannot receive host credentials. \
+             Rejected env vars: {names}. \
+             Use `transport: bridge` for servers requiring API keys."
+        ));
+    }
+    Ok(())
+}
+
+/// Check whether an exec result indicates a missing binary and return an
+/// actionable error if so.
+///
+/// In-sandbox MCP servers must be pre-baked into the container image. When
+/// the binary is not found (exit code 127 or stderr containing "not found"),
+/// this function returns an error with guidance to update the Dockerfile.
+pub fn check_in_sandbox_binary_not_found(
+    sandbox_name: &str,
+    server_command: &str,
+    exit_code: i32,
+    stderr: &[u8],
+) -> miette::Result<()> {
+    let stderr_str = String::from_utf8_lossy(stderr);
+    if stderr_str.contains("not found")
+        || stderr_str.contains("No such file")
+        || exit_code == 127
+    {
+        return Err(miette::miette!(
+            "MCP server command '{server_command}' not found in sandbox '{sandbox_name}'. \
+             In-sandbox MCP servers must be pre-baked into the container image. \
+             Update your Dockerfile to install the server binary, then rebuild the image."
+        ));
+    }
+    Ok(())
+}
+
 /// Copy all bytes from `reader` to `writer`, flushing on completion.
 /// Errors are intentionally discarded – connection teardown errors are
 /// expected during normal SSH session shutdown.
@@ -1148,5 +1269,165 @@ mod tests {
         let message = foreground_forward_started_message("demo", &spec);
         assert!(message.contains("Forwarding port 3000 to sandbox demo"));
         assert!(message.contains("Access at: http://localhost:3000/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // DS-011: In-sandbox MCP server tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_in_sandbox_mcp_command_without_working_dir() {
+        let cmd = build_in_sandbox_mcp_command("/usr/local/bin/mcp-tally", None).unwrap();
+        assert_eq!(cmd, vec!["sh", "-c", "/usr/local/bin/mcp-tally"]);
+    }
+
+    #[test]
+    fn build_in_sandbox_mcp_command_with_working_dir() {
+        let cmd =
+            build_in_sandbox_mcp_command("/usr/local/bin/mcp-tally", Some("/workspace")).unwrap();
+        assert_eq!(
+            cmd,
+            vec!["sh", "-c", "cd /workspace && /usr/local/bin/mcp-tally"]
+        );
+    }
+
+    #[test]
+    fn build_in_sandbox_mcp_command_rejects_empty_command() {
+        let err = build_in_sandbox_mcp_command("", None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must not be empty"),
+            "expected empty-command error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_in_sandbox_mcp_command_with_complex_command() {
+        let cmd = build_in_sandbox_mcp_command(
+            "/usr/local/bin/mcp-tally --store /workspace/.tally",
+            Some("/workspace"),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd[2],
+            "cd /workspace && /usr/local/bin/mcp-tally --store /workspace/.tally"
+        );
+    }
+
+    #[test]
+    fn is_credential_env_detects_known_prefixes() {
+        assert!(is_credential_env("API_KEY"));
+        assert!(is_credential_env("api_key_custom"));
+        assert!(is_credential_env("SECRET_VALUE"));
+        assert!(is_credential_env("TOKEN"));
+        assert!(is_credential_env("AWS_ACCESS_KEY_ID"));
+        assert!(is_credential_env("AZURE_CLIENT_SECRET"));
+        assert!(is_credential_env("GCP_SERVICE_ACCOUNT"));
+        assert!(is_credential_env("GITHUB_TOKEN"));
+        assert!(is_credential_env("OPENAI_API_KEY"));
+        assert!(is_credential_env("ANTHROPIC_API_KEY"));
+        assert!(is_credential_env("HF_TOKEN"));
+    }
+
+    #[test]
+    fn is_credential_env_allows_non_credential_vars() {
+        assert!(!is_credential_env("PATH"));
+        assert!(!is_credential_env("HOME"));
+        assert!(!is_credential_env("RUST_LOG"));
+        assert!(!is_credential_env("LANG"));
+        assert!(!is_credential_env("EDITOR"));
+    }
+
+    #[test]
+    fn reject_credential_env_vars_accepts_empty_list() {
+        reject_credential_env_vars(&[]).unwrap();
+    }
+
+    #[test]
+    fn reject_credential_env_vars_accepts_safe_vars() {
+        let vars = vec!["PATH".to_string(), "HOME".to_string(), "LANG".to_string()];
+        reject_credential_env_vars(&vars).unwrap();
+    }
+
+    #[test]
+    fn reject_credential_env_vars_rejects_credentials() {
+        let vars = vec![
+            "PATH".to_string(),
+            "GITHUB_TOKEN".to_string(),
+            "AWS_SECRET_ACCESS_KEY".to_string(),
+        ];
+        let err = reject_credential_env_vars(&vars).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("GITHUB_TOKEN"),
+            "error should mention GITHUB_TOKEN: {msg}"
+        );
+        assert!(
+            msg.contains("AWS_SECRET_ACCESS_KEY"),
+            "error should mention AWS_SECRET_ACCESS_KEY: {msg}"
+        );
+        assert!(
+            msg.contains("transport: bridge"),
+            "error should suggest bridge transport: {msg}"
+        );
+    }
+
+    #[test]
+    fn reject_credential_env_vars_is_case_insensitive() {
+        let vars = vec!["github_token".to_string()];
+        let err = reject_credential_env_vars(&vars).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("github_token"),
+            "error should mention the original var name: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_in_sandbox_binary_not_found_exit_127() {
+        let err = check_in_sandbox_binary_not_found(
+            "dev",
+            "/usr/local/bin/mcp-tally",
+            127,
+            b"sh: /usr/local/bin/mcp-tally: not found",
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not found in sandbox 'dev'"),
+            "should mention sandbox name: {msg}"
+        );
+        assert!(
+            msg.contains("pre-baked into the container image"),
+            "should explain pre-bake requirement: {msg}"
+        );
+        assert!(
+            msg.contains("Dockerfile"),
+            "should suggest Dockerfile update: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_in_sandbox_binary_not_found_ignores_success() {
+        check_in_sandbox_binary_not_found("dev", "mcp-tally", 0, b"").unwrap();
+    }
+
+    #[test]
+    fn check_in_sandbox_binary_not_found_ignores_other_errors() {
+        // Non-127 exit code without "not found" in stderr should pass through.
+        check_in_sandbox_binary_not_found("dev", "mcp-tally", 1, b"some other error").unwrap();
+    }
+
+    #[test]
+    fn check_in_sandbox_binary_not_found_detects_no_such_file() {
+        let err = check_in_sandbox_binary_not_found(
+            "dev",
+            "mcp-tally",
+            1,
+            b"No such file or directory",
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Dockerfile"), "should suggest Dockerfile: {msg}");
     }
 }

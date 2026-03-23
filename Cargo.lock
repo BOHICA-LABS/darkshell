@@ -987,6 +987,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "darkshell-blueprint"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
